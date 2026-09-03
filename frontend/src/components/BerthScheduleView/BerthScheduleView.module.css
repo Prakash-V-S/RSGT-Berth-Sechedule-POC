@@ -1,0 +1,14 @@
+.container {
+  width: 100%;
+  min-height: 480px;
+  border: 1px dashed #ccc;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.placeholder {
+  color: #888;
+  font-size: 0.95rem;
+}
