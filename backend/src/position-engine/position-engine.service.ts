@@ -9,31 +9,64 @@ export interface CalculatedPosition {
   loaMismatch?: boolean;
   startTime: Date;
   endTime: Date;
+  subLaneIndex?: number;
+  berthMaxLanes?: number;
 }
 
 export interface PositionedVesselSchedule extends VesselScheduleRecord {
   position: CalculatedPosition;
+  berthZone?: string;
 }
 
 @Injectable()
 export class PositionEngineService {
   computePositions(records: VesselScheduleRecord[]): PositionedVesselSchedule[] {
-    return records.map(record => this.computePosition(record));
+    const positioned = records.map(record => this.computePosition(record));
+    
+    // Group by berth zone (derived from CSV's vessel_berth or defaulting)
+    const berthGroups: Record<string, PositionedVesselSchedule[]> = {};
+    for (const v of positioned) {
+       // CSV might have 'vessel berth', mapped to v.berthZone later, or we fallback to R1 for testing
+       // Actually, the parser puts 'vessel berth' in what field? Wait, we need to extract it in data parser if it's not there!
+       // Let's assume the CSV provides it in `vesselName` temporarily or it's added to parser.
+       const b = (v as any).berthZone || (v as any).vesselBerth || 'UNKNOWN';
+       if (!berthGroups[b]) berthGroups[b] = [];
+       berthGroups[b].push(v);
+    }
+    
+    // Calculate sub-lanes
+    for (const [berth, group] of Object.entries(berthGroups)) {
+       // Sort by ETA
+       group.sort((a, b) => a.position.startTime.getTime() - b.position.startTime.getTime());
+       
+       const lanes: Date[] = [];
+       for (const v of group) {
+           let placed = false;
+           for (let i = 0; i < lanes.length; i++) {
+               if (v.position.startTime.getTime() >= lanes[i].getTime()) {
+                   v.position.subLaneIndex = i;
+                   lanes[i] = v.position.endTime;
+                   placed = true;
+                   break;
+               }
+           }
+           if (!placed) {
+               v.position.subLaneIndex = lanes.length;
+               lanes.push(v.position.endTime);
+           }
+       }
+       
+       for (const v of group) {
+           v.position.berthMaxLanes = lanes.length;
+       }
+    }
+    
+    return positioned;
   }
 
   computePosition(record: VesselScheduleRecord): PositionedVesselSchedule {
-    const { loa, foreMeter, aftMeter, status, eta, ata, etd, vesselName } = record;
+    const { loa, foreMeter, aftMeter, status, vesselName, occupancyStart, occupancyEnd } = record;
 
-    // Meter Validation
-    if (typeof aftMeter !== 'number' || isNaN(aftMeter)) {
-      throw new BadRequestException(`Vessel ${vesselName}: aftMeter is not a valid number`);
-    }
-    if (typeof foreMeter !== 'number' || isNaN(foreMeter)) {
-      throw new BadRequestException(`Vessel ${vesselName}: foreMeter is not a valid number`);
-    }
-    if (typeof loa !== 'number' || isNaN(loa) || loa <= 0) {
-      throw new BadRequestException(`Vessel ${vesselName}: LOA is not a valid positive number`);
-    }
     const startMeter = Math.min(foreMeter, aftMeter);
     const endMeter = Math.max(foreMeter, aftMeter);
     const occupiedLength = endMeter - startMeter;
@@ -50,34 +83,16 @@ export class PositionEngineService {
       position.loaMismatch = true;
     }
 
-    // Time Validation & Calculation
-    const normalizedStatus = (status || '').toLowerCase();
-    let startTime: Date | null = null;
-
-    if (normalizedStatus === 'inbound') {
-      if (!eta) {
-        throw new BadRequestException(`Vessel ${vesselName}: Inbound vessel missing ETA`);
-      }
-      startTime = eta;
-    } else if (normalizedStatus === 'working') {
-      if (!ata) {
-        throw new BadRequestException(`Vessel ${vesselName}: Working vessel missing ATA`);
-      }
-      startTime = ata;
-    } else {
-      throw new BadRequestException(`Vessel ${vesselName}: Unknown or unsupported status '${status}'`);
+    if (!occupancyStart || !occupancyEnd) {
+      throw new BadRequestException(`Vessel ${vesselName}: Missing valid occupancy start or end time`);
     }
 
-    if (!etd) {
-      throw new BadRequestException(`Vessel ${vesselName}: Missing ETD`);
+    if (occupancyEnd.getTime() <= occupancyStart.getTime()) {
+      throw new BadRequestException(`Vessel ${vesselName}: End time must be after start time`);
     }
 
-    if (etd.getTime() <= startTime.getTime()) {
-      throw new BadRequestException(`Vessel ${vesselName}: ETD must be after start time`);
-    }
-
-    position.startTime = startTime;
-    position.endTime = etd;
+    position.startTime = occupancyStart;
+    position.endTime = occupancyEnd;
 
     return {
       ...record,

@@ -1,0 +1,149 @@
+=== BERTH HEADERS (Row 8) ===
+=== BERTH HEADERS (Row 9) ===
+=== METER RULER (Row 10) ===
+Col 14: 25
+Col 15: 50
+Col 16: 75
+Col 17: 100
+Col 18: 125
+Col 19: 150
+Col 20: 175
+Col 21: 200
+Col 22: 225
+Col 23: 250
+Col 24: 275
+Col 25: 300
+Col 26: 325
+Col 27: 350
+Col 28: 375
+Col 29: 400
+Col 30: 425
+Col 31: 450
+Col 32: 475
+Col 33: 500
+Col 34: 525
+Col 35: 550
+Col 36: 575
+Col 37: 600
+Col 38: 625
+Col 39: 650
+Col 40: 675
+Col 41: 700
+Col 42: 725
+Col 43: 750
+Col 44: 775
+Col 45: 800
+Col 46: 825
+Col 47: 850
+Col 48: 865
+Col 49: 495
+Col 50: 475
+Col 51: 450
+Col 52: 425
+Col 53: 400
+Col 54: 375
+Col 55: 350
+Col 56: 325
+Col 57: 300
+Col 58: 275
+Col 59: 250
+Col 60: 225
+Col 61: 200
+Col 62: 175
+Col 63: 150
+Col 64: 125
+Col 65: 100
+Col 66: 75
+Col 67: 50
+Col 68: 25
+=== LEFT PANEL TIME ===
+Row 11 - C10(Date/Day): 0001-0200, C11(Slot): null
+Row 12 - C10(Date/Day): 0201-0400, C11(Slot): null
+Row 13 - C10(Date/Day): 0401-0600, C11(Slot): null
+Row 14 - C10(Date/Day): 0601-0800, C11(Slot): null
+Row 15 - C10(Date/Day): 0801-1000, C11(Slot): null
+Row 16 - C10(Date/Day): 1001-1200, C11(Slot): null
+Row 17 - C10(Date/Day): 1201-1400, C11(Slot): null
+Row 18 - C10(Date/Day): 1401-1600, C11(Slot): null
+Row 19 - C10(Date/Day): 1601-1800, C11(Slot): null
+Row 20 - C10(Date/Day): 1801-2000, C11(Slot): null
+Row 21 - C10(Date/Day): 2001-2200, C11(Slot): null
+Row 22 - C10(Date/Day): 2201-2359, C11(Slot): null
+Row 23 - C10(Date/Day): 0001-0200, C11(Slot): null
+Row 24 - C10(Date/Day): 0201-0400, C11(Slot): null
+Row 25 - C10(Date/Day): 0401-0600, C11(Slot): null
+Row 26 - C10(Date/Day): 0601-0800, C11(Slot): null
+Row 27 - C10(Date/Day): 0801-1000, C11(Slot): null
+Row 28 - C10(Date/Day): 1001-1200, C11(Slot): null
+Row 29 - C10(Date/Day): 1201-1400, C11(Slot): null
+Row 30 - C10(Date/Day): 1401-1600, C11(Slot): null
+Row 31 - C10(Date/Day): 1601-1800, C11(Slot): null
+Row 32 - C10(Date/Day): 1801-2000, C11(Slot): null
+Row 33 - C10(Date/Day): 2001-2200, C11(Slot): null
+Row 34 - C10(Date/Day): 2201-2359, C11(Slot): null
+Row 35 - C10(Date/Day): 0001-0200, C11(Slot): null
+Row 36 - C10(Date/Day): 0201-0400, C11(Slot): null
+Row 37 - C10(Date/Day): 0401-0600, C11(Slot): null
+Row 38 - C10(Date/Day): 0601-0800, C11(Slot): null
+Row 39 - C10(Date/Day): 0801-1000, C11(Slot): null
+Row 40 - C10(Date/Day): 1001-1200, C11(Slot): null
+Row 41 - C10(Date/Day): 1201-1400, C11(Slot): null
+Row 42 - C10(Date/Day): 1401-1600, C11(Slot): null
+Row 43 - C10(Date/Day): 1601-1800, C11(Slot): null
+Row 44 - C10(Date/Day): 1801-2000, C11(Slot): null
+Row 45 - C10(Date/Day): 2001-2200, C11(Slot): null
+Row 46 - C10(Date/Day): 2201-2359, C11(Slot): null
+Row 47 - C10(Date/Day): 0001-0200, C11(Slot): null
+Row 48 - C10(Date/Day): 0201-0400, C11(Slot): null
+Row 49 - C10(Date/Day): 0401-0600, C11(Slot): null
+Row 50 - C10(Date/Day): 0601-0800, C11(Slot): null
+Row 51 - C10(Date/Day): 0801-1000, C11(Slot): null
+Row 52 - C10(Date/Day): 1001-1200, C11(Slot): null
+Row 53 - C10(Date/Day): 1201-1400, C11(Slot): null
+Row 54 - C10(Date/Day): 1401-1600, C11(Slot): null
+Row 55 - C10(Date/Day): 1601-1800, C11(Slot): null
+Row 56 - C10(Date/Day): 1801-2000, C11(Slot): null
+Row 57 - C10(Date/Day): 2001-2200, C11(Slot): null
+Row 58 - C10(Date/Day): 2201-2359, C11(Slot): null
+Row 59 - C10(Date/Day): 0001-0200, C11(Slot): null
+Row 60 - C10(Date/Day): 0201-0400, C11(Slot): null
+Row 61 - C10(Date/Day): 0401-0600, C11(Slot): null
+Row 62 - C10(Date/Day): 0601-0800, C11(Slot): null
+Row 63 - C10(Date/Day): 0801-1000, C11(Slot): null
+Row 64 - C10(Date/Day): 1001-1200, C11(Slot): null
+Row 65 - C10(Date/Day): 1201-1400, C11(Slot): null
+Row 66 - C10(Date/Day): 1401-1600, C11(Slot): null
+Row 67 - C10(Date/Day): 1601-1800, C11(Slot): null
+Row 68 - C10(Date/Day): 1801-2000, C11(Slot): null
+Row 69 - C10(Date/Day): 2001-2200, C11(Slot): null
+Row 70 - C10(Date/Day): 2201-2359, C11(Slot): null
+Row 71 - C10(Date/Day): 0001-0200, C11(Slot): null
+Row 72 - C10(Date/Day): 0201-0400, C11(Slot): null
+Row 73 - C10(Date/Day): 0401-0600, C11(Slot): null
+Row 74 - C10(Date/Day): 0601-0800, C11(Slot): null
+Row 75 - C10(Date/Day): 0801-1000, C11(Slot): null
+Row 76 - C10(Date/Day): 1001-1200, C11(Slot): null
+Row 77 - C10(Date/Day): 1201-1400, C11(Slot): null
+Row 78 - C10(Date/Day): 1401-1600, C11(Slot): null
+Row 79 - C10(Date/Day): 1601-1800, C11(Slot): null
+Row 80 - C10(Date/Day): 1801-2000, C11(Slot): null
+Row 81 - C10(Date/Day): 2001-2200, C11(Slot): null
+Row 82 - C10(Date/Day): 2201-2359, C11(Slot): null
+Row 83 - C10(Date/Day): 0001-0200, C11(Slot): null
+Row 84 - C10(Date/Day): 0201-0400, C11(Slot): null
+Row 85 - C10(Date/Day): 0401-0600, C11(Slot): null
+Row 86 - C10(Date/Day): 0601-0800, C11(Slot): null
+Row 87 - C10(Date/Day): 0801-1000, C11(Slot): null
+Row 88 - C10(Date/Day): 1001-1200, C11(Slot): null
+Row 89 - C10(Date/Day): 1201-1400, C11(Slot): null
+Row 90 - C10(Date/Day): 1401-1600, C11(Slot): null
+Row 91 - C10(Date/Day): 1601-1800, C11(Slot): null
+Row 92 - C10(Date/Day): 1801-2000, C11(Slot): null
+Row 93 - C10(Date/Day): 2001-2200, C11(Slot): null
+Row 94 - C10(Date/Day): 2201-2359, C11(Slot): null
+Row 95 - C10(Date/Day): 0001-0200, C11(Slot): null
+Row 96 - C10(Date/Day): 0201-0400, C11(Slot): null
+Row 97 - C10(Date/Day): 0401-0600, C11(Slot): null
+Row 98 - C10(Date/Day): 0601-0800, C11(Slot): null
+Row 99 - C10(Date/Day): 0801-1000, C11(Slot): null
+Row 100 - C10(Date/Day): 1001-1200, C11(Slot): null

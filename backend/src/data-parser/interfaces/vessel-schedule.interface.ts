@@ -12,4 +12,10 @@ export interface VesselScheduleRecord {
   eta: Date | null;
   ata: Date | null;
   etd: Date | null;
+  estTimeOfBerth: Date | null;
+  atb: Date | null;
+  atd: Date | null;
+  berthZone?: string;
+  occupancyStart?: Date | null;
+  occupancyEnd?: Date | null;
 }

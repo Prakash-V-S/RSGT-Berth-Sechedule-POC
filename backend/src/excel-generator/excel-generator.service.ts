@@ -1,402 +1,508 @@
+
+
 import { Injectable, Logger } from '@nestjs/common';
 import * as ExcelJS from 'exceljs';
-import { VesselScheduleRecord } from '../data-parser/interfaces/vessel-schedule.interface';
-import { PositionEngineService } from '../position-engine/position-engine.service';
-import { ConfigService } from '@nestjs/config';
 import * as path from 'path';
-
-interface ProcessedRecord {
-  record: VesselScheduleRecord;
-  positioned: any; // from PositionEngine
-  isValid: boolean;
-  error?: string;
-}
+import * as fs from 'fs';
+import { CalculatedPosition } from '../position-engine/position-engine.service';
+const sharp = require('sharp');
 
 @Injectable()
 export class ExcelGeneratorService {
   private readonly logger = new Logger(ExcelGeneratorService.name);
-  
-  // Grid configuration
-  private readonly METERS_PER_COL = 25;
-  private readonly LEFT_COLS = 13;
-  private readonly GRID_COL_OFFSET = 14; // Grid starts at column 14 (1-based)
-  private readonly TOTAL_GRID_COLS = 55; // 1350m / 25m
-  private readonly HEADER_ROWS = 7;
-  private readonly GRID_START_ROW = 8; // Grid starts at row 8
 
-  private readonly TIME_SLOTS = [
-    '0001-0200', '0201-0400', '0401-0600', '0601-0800',
-    '0801-1000', '1001-1200', '1201-1400', '1401-1600',
-    '1601-1800', '1801-2000', '2001-2200', '2201-2359',
-  ];
+  // Hardcoded as requested
+  private readonly TEMPLATE_PATH = 'D:/RSGT Berth Sechedule POC/rsgt-berth-schedule/empty-template.xlsx';
 
-  private readonly BERTH_ZONES = [
-    { name: 'R1', startM: 0,   endM: 275  },
-    { name: 'R2', startM: 275, endM: 550  },
-    { name: 'R3', startM: 550, endM: 825  },
-    { name: 'R4', startM: 825, endM: 1350 }, // R4 reversed scale (865 m quay)
-  ];
-
-  constructor(
-    private readonly positionEngine: PositionEngineService,
-    private readonly configService: ConfigService,
-  ) {}
-
-  private meterToGridCol(meter: number): number {
-    return Math.floor(meter / this.METERS_PER_COL);
+  private addDays(date: Date, days: number): Date {
+    const d = new Date(date);
+    d.setUTCDate(d.getUTCDate() + days);
+    return d;
   }
 
-  private addDays(d: Date, n: number): Date {
-    const r = new Date(d);
-    r.setDate(r.getDate() + n);
-    return r;
-  }
+  async generateBerthPlan(processed: { record: any; isValid: boolean; error?: string; position?: CalculatedPosition }[], outputPath: string) {
+    if (!fs.existsSync(this.TEMPLATE_PATH)) {
+      throw new Error(`Template not found at ${this.TEMPLATE_PATH}`);
+    }
 
-  private dateOnly(d: Date): Date {
-    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  }
-
-  private isoWeek(d: Date): number {
-    const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-    date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
-    const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
-    return Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
-  }
-
-  async generateBerthPlan(records: VesselScheduleRecord[], outputPath: string) {
     const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(this.TEMPLATE_PATH);
+    const mainSheet = workbook.getWorksheet('MAIN BERTH PLAN');
+    if (!mainSheet) {
+      throw new Error('MAIN BERTH PLAN sheet not found in template.');
+    }
+
+    // --- PHASE 3: METER MAPPING ---
+    const stdMeterMap = new Map<number, number>(); // Linear map (R1, R2, R3)
+    const revMeterMap = new Map<number, number>(); // Reversed map (R4)
     
-    workbook.creator = 'RSGT Berth Schedule POC';
-    workbook.created = new Date();
-
-    const mainSheet = workbook.addWorksheet('MAIN BERTH PLAN', {
-      properties: { defaultRowHeight: 20 },
-      views: [{ state: 'frozen', ySplit: this.GRID_START_ROW - 1, xSplit: this.LEFT_COLS }]
-    });
-
-    const summarySheet = workbook.addWorksheet('DATA SUMMARY');
-
-    // Process records through Position Engine
-    const processed: ProcessedRecord[] = [];
-    let minTime = Infinity;
-    let maxTime = -Infinity;
-
-    for (const record of records) {
-      try {
-        const positioned = this.positionEngine.computePosition(record);
-        processed.push({ record, positioned, isValid: true });
-
-        const sTime = positioned.position.startTime.getTime();
-        const eTime = positioned.position.endTime.getTime();
-        if (sTime < minTime) minTime = sTime;
-        if (eTime > maxTime) maxTime = eTime;
-
-      } catch (err: any) {
-        processed.push({ record, positioned: null, isValid: false, error: err.message });
+    const r10 = mainSheet.getRow(10);
+    r10.eachCell((cell, colNum) => {
+      if (colNum >= 14 && typeof cell.value === 'number') {
+        const meter = cell.value;
+        if (colNum <= 48) {
+          stdMeterMap.set(meter, colNum);
+        } else if (colNum >= 49 && colNum <= 68) {
+          revMeterMap.set(meter, colNum);
+        }
       }
-    }
-
-    // Determine Schedule Date Range
-    const envStart = this.configService.get<string>('PLAN_START_DATE');
-    const envEnd = this.configService.get<string>('PLAN_END_DATE');
-
-    let scheduleStart = envStart ? new Date(envStart).getTime() : minTime;
-    let scheduleEnd = envEnd ? new Date(envEnd).getTime() : maxTime;
-
-    if (scheduleStart === Infinity) {
-      // Fallback if no valid vessels and no env vars
-      scheduleStart = Date.now();
-      scheduleEnd = Date.now() + 7 * 24 * 60 * 60 * 1000; // +7 days
-    }
-
-    const startDate = this.dateOnly(new Date(scheduleStart));
-    const endDate = this.dateOnly(new Date(scheduleEnd));
-
-    const totalDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-    const totalSlots = totalDays * 12; // 12 two-hour slots per day
-
-    // --- SETUP MAIN SHEET ---
-    
-    // Set column widths for left section
-    for (let i = 1; i <= 7; i++) mainSheet.getColumn(i).width = 4; // R1-B7
-    mainSheet.getColumn(8).width = 18; // COMMERCIAL QC
-    mainSheet.getColumn(9).width = 14; // HOURLY QC
-    mainSheet.getColumn(10).width = 12; // Time Slot
-    mainSheet.getColumn(11).width = 15; // Date
-    mainSheet.getColumn(12).width = 6;  // 12:00
-    mainSheet.getColumn(13).width = 2;  // Separator
-
-    // Set grid column widths
-    for (let i = 0; i < this.TOTAL_GRID_COLS; i++) {
-      mainSheet.getColumn(this.GRID_COL_OFFSET + i).width = 2.5;
-    }
-
-    // Logo & Headers (Rows 1-2)
-    mainSheet.mergeCells(1, this.GRID_COL_OFFSET, 2, this.GRID_COL_OFFSET + this.TOTAL_GRID_COLS - 1);
-    const titleCell = mainSheet.getCell(1, this.GRID_COL_OFFSET);
-    titleCell.value = 'RSGT LOGO / HEADER\nRED SEA GATEWAY TERMINAL';
-    titleCell.font = { bold: true, size: 16 };
-    titleCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-    
-    // Row 4: Berth Zone headers
-    const leftHeaders = ['R1', 'R2', 'R3', 'R4', 'B6', 'B4', 'B7', 'COMMERCIAL QC', "HOURLY QC'S", `WEEK ${this.isoWeek(startDate)}`];
-    leftHeaders.forEach((text, i) => {
-      const col = i + 1;
-      const mergeTo = col === 10 ? 12 : col;
-      mainSheet.mergeCells(4, col, 6, mergeTo);
-      const cell = mainSheet.getCell(4, col);
-      cell.value = text;
-      cell.alignment = { horizontal: 'center', vertical: 'middle', textRotation: col <= 7 ? 90 : 0, wrapText: true };
-      cell.font = { bold: true };
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
-      cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
     });
 
-    const zoneMap = [
-      { name: 'R1', start: 0, len: 11, label: 'Berth #1' },
-      { name: 'R2', start: 11, len: 11, label: 'Berth #2' },
-      { name: 'R3', start: 22, len: 13, label: 'Berth #3' },
-      { name: 'R4', start: 35, len: 20, label: 'Berth #4' }
-    ];
+    // We also need a helper to get the exact fractional column for a meter
+    const getFractionalColumnForMeter = (meter: number, berth: string) => {
+      const map = (berth.toLowerCase().includes('r4')) ? revMeterMap : stdMeterMap;
+      
+      let lowerMeter = -Infinity;
+      let lowerCol = -1;
+      let upperMeter = Infinity;
+      let upperCol = -1;
 
-    zoneMap.forEach(z => {
-      mainSheet.mergeCells(4, this.GRID_COL_OFFSET + z.start, 4, this.GRID_COL_OFFSET + z.start + z.len - 1);
-      const c1 = mainSheet.getCell(4, this.GRID_COL_OFFSET + z.start);
-      c1.value = z.name;
-      c1.alignment = { horizontal: 'center' };
-      c1.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+      for (const [m, col] of map.entries()) {
+        if (m <= meter && m > lowerMeter) { lowerMeter = m; lowerCol = col; }
+        if (m >= meter && m < upperMeter) { upperMeter = m; upperCol = col; }
+      }
 
-      mainSheet.mergeCells(5, this.GRID_COL_OFFSET + z.start, 6, this.GRID_COL_OFFSET + z.start + z.len - 1);
-      const c2 = mainSheet.getCell(5, this.GRID_COL_OFFSET + z.start);
-      c2.value = z.label;
-      c2.alignment = { horizontal: 'center', vertical: 'middle' };
-      c2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAD3' } }; // Light green
-      c2.border = { top: { style: 'thin' }, bottom: { style: 'medium' }, left: { style: 'thin' }, right: { style: 'thin' } };
-    });
+      if (lowerMeter === -Infinity && upperMeter === Infinity) return 14;
+      if (lowerMeter === -Infinity) return upperCol;
+      if (upperMeter === Infinity) return lowerCol;
+      if (lowerMeter === upperMeter) return lowerCol;
 
-    // Row 7: Meter Ruler
-    for (let i = 0; i < this.TOTAL_GRID_COLS; i++) {
-      const cell = mainSheet.getCell(7, this.GRID_COL_OFFSET + i);
-      cell.value = (i + 1) * this.METERS_PER_COL;
-      cell.font = { size: 8 };
-      cell.alignment = { horizontal: 'center', vertical: 'middle', textRotation: 90 };
-      cell.border = { bottom: { style: 'medium' }, left: { style: 'dotted' }, right: { style: 'dotted' } };
-    }
+      // Linear interpolation
+      const fraction = (meter - lowerMeter) / (upperMeter - lowerMeter);
+      const colDiff = upperCol - lowerCol; 
+      
+      return lowerCol + (fraction * colDiff);
+    };
+
+    // --- PHASE 4: TIME MAPPING ---
+    let minTime = Number.MAX_SAFE_INTEGER;
+    let maxTime = Number.MIN_SAFE_INTEGER;
     
-    for (let i = 1; i < this.GRID_COL_OFFSET; i++) {
-      mainSheet.getCell(7, i).border = { bottom: { style: 'medium' } };
-    }
-
-    // Build Vessel Blocks
-    const vesselBlocks: any[] = [];
-    const slotBerthService: Record<number, Record<string, Set<string>>> = {};
-
     for (const p of processed) {
-      if (!p.isValid || !p.positioned) continue;
-      const pos = p.positioned.position;
-      
-      const startMs = pos.startTime.getTime();
-      const endMs = pos.endTime.getTime();
-      
-      if (endMs < startDate.getTime() || startMs > this.addDays(endDate, 1).getTime()) continue;
-
-      const absStart = Math.max(0, Math.floor((startMs - startDate.getTime()) / (1000 * 60 * 60 * 2)));
-      const absEnd = Math.min(totalSlots - 1, Math.ceil((endMs - startDate.getTime()) / (1000 * 60 * 60 * 2)) - 1);
-
-      if (absStart > absEnd) continue;
-
-      let berthZone = 'R1';
-      for (const z of this.BERTH_ZONES) {
-        if (pos.startMeter >= z.startM && pos.startMeter < z.endM) { berthZone = z.name; break; }
-      }
-
-      vesselBlocks.push({
-        record: p.record,
-        pos, absStart, absEnd, berthZone,
-        startM: pos.startMeter, endM: pos.endMeter
-      });
-
-      for (let s = absStart; s <= absEnd; s++) {
-        if (!slotBerthService[s]) slotBerthService[s] = {};
-        if (!slotBerthService[s][berthZone]) slotBerthService[s][berthZone] = new Set();
-        slotBerthService[s][berthZone].add((p.record as any).service || p.record.vesselName);
+      if (p.isValid && p.position) {
+        minTime = Math.min(minTime, p.position.startTime.getTime());
+        maxTime = Math.max(maxTime, p.position.endTime.getTime());
       }
     }
+    
+    // Configurable interval mapping as requested
+    const intervalMinutes = 120;
+    const rowsPerInterval = 1;
+    const timelineStartRow = 11;
+    
+    const scheduleStartDate = minTime === Number.MAX_SAFE_INTEGER ? new Date() : new Date(minTime);
+    // Align schedule start to the beginning of the 2-hour block
+    scheduleStartDate.setUTCMinutes(0, 0, 0);
+    scheduleStartDate.setUTCHours(Math.floor(scheduleStartDate.getUTCHours() / 2) * 2);
 
-    // --- DRAW GRID & TIME AXIS ---
-    let currentRow = this.GRID_START_ROW;
-    let currentDayStr = '';
+    const scheduleEndDate = maxTime === Number.MIN_SAFE_INTEGER ? new Date(scheduleStartDate.getTime() + 24 * 60 * 60 * 1000) : new Date(maxTime);
+    scheduleEndDate.setUTCMinutes(0, 0, 0);
+    scheduleEndDate.setUTCHours(Math.ceil(scheduleEndDate.getUTCHours() / 2) * 2);
 
-    for (let slot = 0; slot < totalSlots; slot++) {
-      const dayIndex  = Math.floor(slot / 12);
-      const slotInDay = slot % 12;
-      const slotDay   = this.addDays(startDate, dayIndex);
-      const timeLabel = this.TIME_SLOTS[slotInDay];
-      const dayStr = slotDay.toLocaleDateString('en-GB', { weekday: 'long' });
+    const getFractionalRowForTime = (time: Date) => {
+      if (!time) return -1;
+      const msDiff = time.getTime() - scheduleStartDate.getTime();
+      const minutesDiff = msDiff / (1000 * 60);
+      const intervalsDiff = minutesDiff / intervalMinutes;
+      return timelineStartRow + (intervalsDiff * rowsPerInterval);
+    };
 
-      // Col 10: Time slot
-      mainSheet.getCell(currentRow, 10).value = timeLabel;
-      mainSheet.getCell(currentRow, 10).alignment = { horizontal: 'center', vertical: 'middle' };
-      mainSheet.getCell(currentRow, 10).border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
-
-      // Col 11: Date (Day name merged)
-      if (slotInDay === 0) {
-        mainSheet.mergeCells(currentRow, 11, currentRow + 11, 11);
-        const dateCell = mainSheet.getCell(currentRow, 11);
-        
-        const dd = slotDay.getDate().toString().padStart(2, '0');
-        const mon = slotDay.toLocaleString('en-GB', { month: '2-digit' });
-        const yyyy = slotDay.getFullYear();
-        
-        dateCell.value = `${dayStr}\n\n\n\n\n${dd}-${mon}-${yyyy}`;
-        dateCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-        dateCell.border = { top: { style: 'medium' }, bottom: { style: 'medium' }, left: { style: 'thin' }, right: { style: 'thin' } };
-      }
-
-      // Col 12: Noon marker
-      if (slotInDay === 6) {
-        mainSheet.getCell(currentRow, 12).value = '12:00';
-        mainSheet.getCell(currentRow, 12).font = { size: 8 };
-        mainSheet.getCell(currentRow, 12).alignment = { horizontal: 'center' };
-      }
-
-      // Col 8: Commercial QC, Col 9: Hourly QC
-      let activeVessels = 0;
-      vesselBlocks.forEach(vb => {
-        if (slot >= vb.absStart && slot <= vb.absEnd) activeVessels++;
-      });
-      
-      mainSheet.getCell(currentRow, 8).value = activeVessels > 0 ? activeVessels * 2 + 10 : '';
-      mainSheet.getCell(currentRow, 8).alignment = { horizontal: 'center' };
-      mainSheet.getCell(currentRow, 8).border = { top: { style: 'thin' }, bottom: { style: 'thin' } };
-      
-      mainSheet.getCell(currentRow, 9).value = '16';
-      mainSheet.getCell(currentRow, 9).alignment = { horizontal: 'center' };
-      mainSheet.getCell(currentRow, 9).border = { top: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'medium' } };
-
-      // Apply borders to grid cells
-      for (let i = 0; i < this.TOTAL_GRID_COLS; i++) {
-        const c = mainSheet.getCell(currentRow, this.GRID_COL_OFFSET + i);
-        c.border = { top: { style: 'dotted' }, bottom: { style: 'dotted' }, left: { style: 'dotted' }, right: { style: 'dotted' } };
-        // Thicker border for end of day
-        if (slotInDay === 11) {
-          c.border.bottom = { style: 'medium' };
+    // --- PHASE 5: TIMELINE GENERATION ---
+    const daysMap = new Map<string, { startRow: number, endRow: number, dayName: string }>();
+    let rowCursor = timelineStartRow;
+    
+    // Pre-clear all potential timeline rows to avoid residual template colors
+    for (let r = timelineStartRow; r < 1000; r++) {
+        // Clear old template values in columns J, K, L, M (10-13)
+        for (let c = 10; c <= 13; c++) {
+            const cell = mainSheet.getCell(r, c);
+            cell.value = null;
+            // Clear borders completely for time/date columns except when we re-add them
+            cell.border = {};
+            if (cell.isMerged) {
+                try { mainSheet.unMergeCells(cell.address); } catch (e) {}
+            }
         }
-      }
-
-      currentRow++;
+        // Clear old dummy blocks in columns A-G (1-7)
+        for (let c = 1; c <= 7; c++) {
+            const cell = mainSheet.getCell(r, c);
+            cell.value = null;
+            // Force a solid white fill to overwrite any template colors
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+            cell.border = { top: {style:'thin'}, bottom: {style:'thin'}, left: {style:'thin'}, right: {style:'thin'} };
+            if (cell.isMerged) {
+                try { mainSheet.unMergeCells(cell.address); } catch (e) {}
+            }
+        }
     }
 
-    // --- PLOT VESSELS ---
-    for (const vb of vesselBlocks) {
-      const rowStart = this.GRID_START_ROW + vb.absStart;
-      const rowEnd = this.GRID_START_ROW + vb.absEnd;
+    for (let t = scheduleStartDate.getTime(); t < scheduleEndDate.getTime(); t += intervalMinutes * 60000) {
+       const dateObj = new Date(t);
+       
+       // Format Time Range for Col 11 (K)
+       // e.g. 18:00 -> "1801-2000", 00:00 -> "0001-0200", 22:00 -> "2201-2400"
+       const h = dateObj.getUTCHours();
+       const startH = h.toString().padStart(2, '0');
+       let endHNum = h + 2;
+       // Excel usually uses 2400 for midnight end
+       const endHStr = endHNum.toString().padStart(2, '0');
+       const timeLabel = `${startH}01-${endHStr}00`;
+       
+       const timeCell = mainSheet.getCell(rowCursor, 11);
+       timeCell.value = timeLabel;
+       timeCell.alignment = { vertical: 'middle', horizontal: 'center' };
+       timeCell.border = { top: {style:'thin'}, bottom: {style:'thin'}, left: {style:'thin'}, right: {style:'thin'} };
+       timeCell.font = { name: 'Calibri', size: 10 };
 
-      const gridColStart = this.GRID_COL_OFFSET + this.meterToGridCol(vb.startM);
-      const gridColEnd   = this.GRID_COL_OFFSET + Math.ceil(vb.endM / this.METERS_PER_COL) - 1;
+       // Format Date to DD-MM-YYYY
+       const dd = dateObj.getUTCDate().toString().padStart(2, '0');
+       const mm = (dateObj.getUTCMonth() + 1).toString().padStart(2, '0');
+       const yyyy = dateObj.getUTCFullYear();
+       const dateStr = `${dd}-${mm}-${yyyy}`;
+       
+       const dayStr = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][dateObj.getUTCDay()];
 
-      const colStart = Math.max(this.GRID_COL_OFFSET, gridColStart);
-      const colEnd = Math.min(this.GRID_COL_OFFSET + this.TOTAL_GRID_COLS - 1, gridColEnd);
+       if (!daysMap.has(dateStr)) {
+          daysMap.set(dateStr, { startRow: rowCursor, endRow: rowCursor + rowsPerInterval - 1, dayName: dayStr });
+       } else {
+          daysMap.get(dateStr)!.endRow = rowCursor + rowsPerInterval - 1;
+       }
+       rowCursor += rowsPerInterval;
+    }
 
-      if (colStart > colEnd) continue;
+    // Merge Date and Day cells in Cols L (12) and M (13)
+    for (const [dateStr, info] of daysMap.entries()) {
+       if (info.startRow < info.endRow) {
+           try { mainSheet.mergeCells(info.startRow, 12, info.endRow, 12); } catch (e) {}
+           try { mainSheet.mergeCells(info.startRow, 13, info.endRow, 13); } catch (e) {}
+       }
+       const dateCell = mainSheet.getCell(info.startRow, 12);
+       dateCell.value = dateStr;
+       dateCell.alignment = { vertical: 'middle', horizontal: 'center', textRotation: 90 };
+       dateCell.border = { top: {style:'thin'}, bottom: {style:'thin'}, left: {style:'thin'}, right: {style:'thin'} };
+       dateCell.fill = {
+           type: 'pattern',
+           pattern: 'solid',
+           fgColor: { argb: 'FFE7E6E6' } // Light grey background like the screenshot
+       };
+       dateCell.font = { bold: true };
+       
+       const dayCell = mainSheet.getCell(info.startRow, 13);
+       dayCell.value = info.dayName;
+       dayCell.alignment = { vertical: 'middle', horizontal: 'center', textRotation: 90 };
+       dayCell.border = { top: {style:'thin'}, bottom: {style:'thin'}, left: {style:'thin'}, right: {style:'thin'} };
+       dayCell.font = { bold: true };
+    }
 
-      try {
-        mainSheet.mergeCells(rowStart, colStart, rowEnd, colEnd);
-        const vesselCell = mainSheet.getCell(rowStart, colStart);
+    // --- PHASE 6: STATIC BERTH MAPPING ---
+    const BERTH_COLS_STATIC: Record<string, { start: number, end: number }> = {
+        'R1': { start: 14, end: 24 },
+        'R2': { start: 25, end: 35 },
+        'R3': { start: 36, end: 48 },
+        'R4': { start: 49, end: 68 },
+    };
 
-        const isPortside = ((vb.record as any).berthside || '').toLowerCase().includes('port');
-        const bumpStr = isPortside ? `◀ ` : ` ▶`;
-        
-        vesselCell.value = isPortside ? `${bumpStr}${vb.record.vesselName}` : `${vb.record.vesselName}${bumpStr}`;
-        vesselCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true, textRotation: 90 };
-        
-        // Deterministic unique color per vessel
-        const palette = [
-          'FF4A86E8', // Blue
-          'FF93C47D', // Green
-          'FFF6B26B', // Orange
-          'FFFFD966', // Yellow
-          'FFB4A7D6', // Purple
-          'FFE06666', // Red
-          'FF76A5AF', // Teal
-          'FFC27BA0', // Pink
-          'FFB7B7B7', // Gray
-          'FF9FC5E8', // Light Blue
-          'FFE6B8AF', // Light Red
-          'FF8E7CC3', // Dark Purple
-        ];
-        
-        let hash = 0;
-        const colorKey = vb.record.vesselName || 'default';
-        for (let i = 0; i < colorKey.length; i++) {
-          hash = colorKey.charCodeAt(i) + ((hash << 5) - hash);
-        }
-        const colorIdx = Math.abs(hash) % palette.length;
-        const bgColor = palette[colorIdx];
+    const LOGICAL_COLS_STATIC: Record<string, number> = {
+        'R1': 1,
+        'R2': 2,
+        'R3': 3,
+        'R4': 4,
+    };
 
-        vesselCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
-        vesselCell.border = { top: { style: 'thick' }, bottom: { style: 'thick' }, left: { style: 'thick' }, right: { style: 'thick' } };
+    // --- VALID VESSELS ---
+    const validVessels = processed.filter(p => p.isValid && p.position);
+    if (validVessels.length === 0) {
+       this.logger.warn("No valid vessels found to plot!");
+    }
 
-        // Plot left-side service merge
-        const berthColMap: Record<string, number> = { R1: 1, R2: 2, R3: 3, R4: 4, B6: 5, B4: 6, B7: 7 };
-        const leftCol = berthColMap[vb.berthZone];
-        if (leftCol) {
-          try {
-            mainSheet.mergeCells(rowStart, leftCol, rowEnd, leftCol);
-            const serviceCell = mainSheet.getCell(rowStart, leftCol);
-            serviceCell.value = (vb.record as any).service || vb.record.vesselName;
-            serviceCell.alignment = { horizontal: 'center', vertical: 'middle', textRotation: 90 };
-            serviceCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
-            serviceCell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
-          } catch (mergeErr: any) {
-            this.logger.warn(`Could not merge left service column for ${vb.record.vesselName}: ${mergeErr.message}`);
+    // --- PHASE 3: IMAGE OVERLAYS TEST ---
+    const testMode = true; 
+    let drawn = 0;
+    
+    // In-memory conflict shapes
+    const drawnShapes: { vesselName: string, berthSection: string, cMin: number, cMax: number, rMin: number, rMax: number }[] = [];
+    const logicalShapes: { col: number, rMin: number, rMax: number }[] = [];
+
+    const getVesselOrientation = (rec: any) => {
+       const berthside = (rec.berthside || '').toLowerCase();
+       if (berthside.includes('port')) return 'PORT_FACING';
+       if (berthside.includes('starboard')) return 'START_FACING';
+       return 'START_FACING';
+    };
+
+    const getVesselColor = (rec: any) => {
+       const colors = [
+          '#4A86E8', // Blue
+          '#E06666', // Red
+          '#F6B26B', // Orange
+          '#93C47D', // Green
+          '#8E7CC3', // Purple
+          '#FFD966', // Yellow
+          '#76A5AF', // Teal
+          '#C9DAF8', // Light Blue
+          '#D5A6BD', // Pink
+          '#B4A7D6', // Lavender
+          '#E6B8AF', // Peach
+          '#A2C4C9', // Light Teal
+       ];
+       const name = rec.vesselName || '';
+       let hash = 0;
+       for (let i = 0; i < name.length; i++) {
+           hash = name.charCodeAt(i) + ((hash << 5) - hash);
+       }
+       hash = Math.abs(hash);
+       return colors[hash % colors.length];
+    };
+
+    const getVesselBuffer = async (rec: any, colorHex: string, orientation: string, widthPx: number, heightPx: number): Promise<Buffer> => {
+      const svgPath = path.join(process.cwd(), 'assets', 'vessel-silhouette.svg');
+      let baseSvg = fs.readFileSync(svgPath, 'utf8');
+      
+      // The master SVG is drawn HORIZONTALLY with the bow pointing RIGHT.
+      // In a berth schedule, the X-axis is physical length (meters), so the ship stays horizontal.
+      // The width corresponds to LOA, the height corresponds to Time duration.
+      const targetW = Math.max(1, Math.round(widthPx));
+      const targetH = Math.max(1, Math.round(heightPx));
+      
+      // Replace currentColor with actual hex color
+      let coloredSvg = baseSvg.replace(/currentColor/g, colorHex);
+      
+      // Strip any existing width, height, and preserveAspectRatio from the <svg> tag
+      coloredSvg = coloredSvg.replace(/<svg([^>]*?)(?:\s+(?:width|height|preserveAspectRatio)="[^"]*")([^>]*?)>/g, (match) => {
+         return match.replace(/\s+(?:width|height|preserveAspectRatio)="[^"]*"/g, '');
+      });
+      
+      // Ensure SVG stretches exactly to the physical bounds
+      coloredSvg = coloredSvg.replace('<svg', `<svg width="${targetW}" height="${targetH}" preserveAspectRatio="none"`);
+      
+      let sharpInstance = sharp(Buffer.from(coloredSvg));
+      
+      // If Portside, bow points left (original points right, so we flop horizontally)
+      if (orientation === 'PORT_FACING') {
+         sharpInstance = sharpInstance.flop();
+      }
+
+      // Add text overlay
+      const textSvg = `
+        <svg width="${targetW}" height="${targetH}" xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .text {
+              font-family: sans-serif;
+              font-size: 11px;
+              fill: black;
+              font-weight: bold;
+              text-anchor: middle;
+              dominant-baseline: middle;
+            }
+            .subtext {
+              font-family: sans-serif;
+              font-size: 9px;
+              fill: black;
+              text-anchor: middle;
+              dominant-baseline: middle;
+            }
+          </style>
+          <text x="50%" y="40%" class="text">${rec.vesselName || 'Unknown'}</text>
+          <text x="50%" y="60%" class="subtext">${rec.phase || ''}</text>
+        </svg>
+      `;
+
+      sharpInstance = sharpInstance.composite([{
+          input: Buffer.from(textSvg),
+          top: 0,
+          left: 0
+      }]);
+
+      return await sharpInstance.png().toBuffer();
+    };
+
+    for (const p of validVessels) {
+      const rec = p.record;
+      const v = p.position!;
+      const startTimestamp = p.position!.startTime;
+      const endTimestamp = p.position!.endTime;
+      const startTime = startTimestamp;
+      const endTime = endTimestamp;
+
+      const berthInfo = BERTH_COLS_STATIC[rec.berthZone || 'UNKNOWN'];
+      if (!berthInfo) {
+          this.logger.warn(`Unsupported berth zone skipped: ${rec.berthZone}`);
+          processed.find(pr => pr.record.vesselName === rec.vesselName)!.isValid = false;
+          processed.find(pr => pr.record.vesselName === rec.vesselName)!.error = 'Unsupported berth zone';
+          continue;
+      }
+      const totalBerthCols = berthInfo.end - berthInfo.start + 1;
+      
+      const subLaneWidthCols = totalBerthCols / (p.position!.berthMaxLanes || 1);
+      const lanePadding = 0.5; // Internal padding inside sub-lane
+
+      const laneLeft = berthInfo.start + (p.position!.subLaneIndex || 0) * subLaneWidthCols;
+      const laneRight = laneLeft + subLaneWidthCols;
+
+      const physicalVesselWidthCols = (p.position!.occupiedLength || 100) / 25.0;
+      
+      let finalVesselWidth = Math.min(physicalVesselWidthCols, Math.max(0.5, subLaneWidthCols - 2 * lanePadding));
+      if (isNaN(finalVesselWidth) || finalVesselWidth <= 0) {
+         finalVesselWidth = subLaneWidthCols * 0.75;
+      }
+      
+      // Center SVG inside its own sub-lane ONLY
+      let excelColStart = laneLeft + (subLaneWidthCols - finalVesselWidth) / 2;
+      let excelColEnd = excelColStart + finalVesselWidth;
+      
+      let orientationVal = getVesselOrientation(rec);
+      
+      // Fallback just in case
+      if (excelColEnd <= excelColStart) {
+         excelColEnd = excelColStart + 1;
+      }
+
+      const rStart = getFractionalRowForTime(new Date(startTimestamp));
+      const rEnd = getFractionalRowForTime(new Date(endTimestamp));
+      
+      let excelRowStart = Math.min(rStart, rEnd);
+      let excelRowEnd = Math.max(rStart, rEnd);
+      
+      // Validation as requested: height must be reasonable and never extend beyond ETD
+      if (excelRowEnd <= excelRowStart) {
+          excelRowEnd = excelRowStart + 1; // Minimum 1-row height
+      }
+
+      if (excelRowStart < 11 || excelColStart < 14) {
+         processed.find(pr => pr.record.vesselName === rec.vesselName)!.isValid = false;
+         processed.find(pr => pr.record.vesselName === rec.vesselName)!.error = 'Out of bounds coordinates';
+         continue;
+      }
+
+      // Pure in-memory overlap check
+      let conflict = false;
+      const berthSection = rec.berthZone || 'R1';
+      for (const shape of drawnShapes) {
+         if (shape.berthSection === berthSection) {
+            // Rect intersection
+            if (excelColStart < shape.cMax && excelColEnd > shape.cMin &&
+                excelRowStart < shape.rMax && excelRowEnd > shape.rMin) {
+               conflict = true;
+               break;
+            }
+         }
+      }
+
+      if (conflict) {
+         processed.find(pr => pr.record.vesselName === rec.vesselName)!.isValid = false;
+         processed.find(pr => pr.record.vesselName === rec.vesselName)!.error = 'Physical Scheduling Conflict';
+         continue;
+      }
+      
+      // Load image master asset and convert to padded PNG Buffer
+      const color = getVesselColor(rec);
+      
+      const logicalCol = LOGICAL_COLS_STATIC[rec.berthZone || 'UNKNOWN'];
+      if (logicalCol) {
+          const mergeRowStart = Math.floor(excelRowStart);
+          const mergeRowEnd = Math.floor(excelRowEnd) - 1;
+          if (mergeRowStart <= mergeRowEnd) {
+             let mergeConflict = false;
+             for (const shape of logicalShapes) {
+                if (shape.col === logicalCol && !(mergeRowEnd <= shape.rMin || mergeRowStart >= shape.rMax)) {
+                   mergeConflict = true;
+                   break;
+                }
+             }
+
+             if (!mergeConflict) {
+                try {
+                    mainSheet.mergeCells(mergeRowStart, logicalCol, mergeRowEnd, logicalCol);
+                    const mergedCell = mainSheet.getCell(mergeRowStart, logicalCol);
+                    mergedCell.fill = {
+                       type: 'pattern',
+                       pattern: 'solid',
+                       fgColor: { argb: 'FF' + color.replace('#', '') }
+                    };
+                    mergedCell.value = rec.vesselName;
+                    mergedCell.alignment = { vertical: 'middle', horizontal: 'center', textRotation: 90, wrapText: true };
+                    mergedCell.font = { bold: true, size: 8 };
+                    mergedCell.border = { top: {style:'thin'}, bottom: {style:'thin'}, left: {style:'thin'}, right: {style:'thin'} };
+                    logicalShapes.push({ col: logicalCol, rMin: mergeRowStart, rMax: mergeRowEnd + 1 });
+                } catch (e: any) {
+                    this.logger.warn(`Could not merge logical background for ${rec.vesselName}: ${e.message}`);
+                }
+             }
           }
-        }
-      } catch (mergeErr: any) {
-        this.logger.warn(`Could not plot vessel ${vb.record.vesselName}: ${mergeErr.message}`);
       }
-    }
 
-    // --- SETUP SUMMARY SHEET ---
-    summarySheet.columns = [
-      { header: 'Vessel Name', key: 'vesselName', width: 25 },
-      { header: 'Status', key: 'status', width: 15 },
-      { header: 'Validation', key: 'validation', width: 15 },
-      { header: 'Error Message', key: 'error', width: 40 },
-      { header: 'LOA', key: 'loa', width: 10 },
-      { header: 'Fore Meter', key: 'foreMeter', width: 15 },
-      { header: 'Aft Meter', key: 'aftMeter', width: 15 },
-    ];
-
-    summarySheet.getRow(1).font = { bold: true };
-
-    for (const p of processed) {
-      summarySheet.addRow({
-        vesselName: p.record.vesselName,
-        status: p.record.status,
-        validation: p.isValid ? 'VALID' : 'INVALID',
-        error: p.error || '',
-        loa: p.record.loa,
-        foreMeter: p.record.foreMeter,
-        aftMeter: p.record.aftMeter,
+      // Limit internal rendering resolution to avoid Sharp crashes on huge durations,
+      // while keeping the aspect ratio calculation intact via the swapped logic above.
+      const widthPx = Math.min((excelColEnd - excelColStart) * 110, 4000);
+      const heightPx = Math.min((excelRowEnd - excelRowStart) * 80, 8000);
+      const vesselColor = getVesselColor(rec);
+      const vesselBuffer = await getVesselBuffer(rec, vesselColor, orientationVal, widthPx, heightPx);
+      
+      const imageId = workbook.addImage({
+         buffer: vesselBuffer as any,
+         extension: 'png',
       });
+      
+      mainSheet.addImage(imageId, {
+         tl: { col: excelColStart, row: excelRowStart } as any,
+         br: { col: excelColEnd, row: excelRowEnd } as any,
+         editAs: 'absolute'
+      });
+
+      drawnShapes.push({
+         vesselName: rec.vesselName,
+         berthSection: berthSection,
+         cMin: excelColStart,
+         cMax: excelColEnd,
+         rMin: excelRowStart,
+         rMax: excelRowEnd
+      });
+
+      console.log(`\n========================================`);
+      console.log(`Vessel: ${rec.vesselName}`);
+      console.log(`Berth zone: ${rec.berthZone}`);
+      console.log(`Phase/status: ${rec.status}`);
+      console.log(`Raw start value: ${rec.estTimeOfBerth ? rec.estTimeOfBerth.toISOString() : (rec.ata ? rec.ata.toISOString() : (rec.eta ? rec.eta.toISOString() : 'N/A'))}`);
+      console.log(`Parsed start value: ${new Date(startTimestamp).toISOString()}`);
+      console.log(`Raw end value: ${rec.atd ? rec.atd.toISOString() : (rec.etd ? rec.etd.toISOString() : 'N/A')}`);
+      console.log(`Parsed end value: ${new Date(endTimestamp).toISOString()}`);
+      console.log(`Timeline start: ${scheduleStartDate.toISOString()}`);
+      console.log(`Timeline end: ${scheduleEndDate.toISOString()}`);
+      console.log(`Start row: ${excelRowStart.toFixed(4)}`);
+      console.log(`End row: ${excelRowEnd.toFixed(4)}`);
+      console.log(`Height: ${(excelRowEnd - excelRowStart).toFixed(2)}`);
+      console.log(`Sub-lane index: ${p.position!.subLaneIndex || 0}`);
+      console.log(`Maximum lanes: ${p.position!.berthMaxLanes || 1}`);
+      console.log(`Berth start column: ${berthInfo.start}`);
+      console.log(`Berth end column: ${berthInfo.end}`);
+      console.log(`Vessel X: ${excelColStart.toFixed(4)} to ${excelColEnd.toFixed(4)}`);
+      console.log(`Vessel width: ${finalVesselWidth.toFixed(4)}`);
+
+      if (excelRowEnd - excelRowStart > 200) {
+          console.log(`⚠️ WARNING: Vessel height is unexpectedly large (${(excelRowEnd - excelRowStart).toFixed(2)} rows)! Please inspect date-to-row conversion.`);
+      }
+
+      if (testMode) {
+        console.log(`Conflict Result: No Conflict. Successfully drawn.`);
+      }
+
+      drawn++;
     }
 
-    // Write file
-    const outputDir = path.dirname(outputPath);
-    const fs = require('fs');
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
+    if (testMode) {
+      const testPath = path.join(path.dirname(outputPath), `berth-plan-shape-test-${Date.now()}.xlsx`);
+      await workbook.xlsx.writeFile(testPath);
+      console.log(`\nSaved shape test to: ${testPath}`);
+      return { total: 1, successful: 1, invalid: 0, errors: [] as { vesselName: string, message: string }[] };
     }
 
+    // In normal mode we would write to outputPath
     await workbook.xlsx.writeFile(outputPath);
-    
-    // Return summary for CLI
     return {
       total: processed.length,
-      successful: processed.filter(p => p.isValid).length,
+      successful: drawn,
       invalid: processed.filter(p => !p.isValid).length,
-      errors: processed.filter(p => !p.isValid).map(p => ({ vesselName: p.record.vesselName, message: p.error }))
+      errors: processed.filter(p => !p.isValid).map(p => ({ vesselName: p.record.vesselName, message: p.error || 'Unknown error' }))
     };
   }
 }

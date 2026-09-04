@@ -45,37 +45,68 @@ export class DataParserService {
           throw new BadRequestException(`Missing required value 'Phase' (Status)`);
         }
 
-        const parseDate = (val: string) => {
+        const parseRsgtDate = (val: string, vName: string): Date | null => {
           if (!val || val.trim() === '') return null;
           
           let cleanVal = val.trim();
           
+          const validateParts = (y: number, m: number, d: number, h: number, min: number) => {
+             if (isNaN(y) || isNaN(m) || isNaN(d) || isNaN(h) || isNaN(min)) return false;
+             if (m < 1 || m > 12) return false;
+             if (d < 1 || d > 31) return false;
+             if (h < 0 || h > 23) return false;
+             if (min < 0 || min > 59) return false;
+             return true;
+          };
+
           // Case 1: 30-08-2026 1900 (DD-MM-YYYY HHmm)
           const regexDDMMYYYY = /^(\d{2})-(\d{2})-(\d{4})\s+(\d{2}):?(\d{2})$/;
           const match1 = cleanVal.match(regexDDMMYYYY);
           if (match1) {
-            return new Date(`${match1[3]}-${match1[2]}-${match1[1]}T${match1[4]}:${match1[5]}:00Z`);
+            const d = parseInt(match1[1], 10);
+            const m = parseInt(match1[2], 10);
+            const y = parseInt(match1[3], 10);
+            const h = parseInt(match1[4], 10);
+            const min = parseInt(match1[5], 10);
+            if (validateParts(y, m, d, h, min)) {
+              return new Date(Date.UTC(y, m - 1, d, h, min, 0));
+            }
           }
 
           // Case 2: 26-Sep-04 1900 (YY-MMM-DD HHmm)
           const regexYYMMMDD = /^(\d{2})-([A-Za-z]{3})-(\d{2})\s+(\d{2}):?(\d{2})$/;
           const match2 = cleanVal.match(regexYYMMMDD);
           if (match2) {
-            const months: Record<string, string> = { Jan:'01',Feb:'02',Mar:'03',Apr:'04',May:'05',Jun:'06',Jul:'07',Aug:'08',Sep:'09',Oct:'10',Nov:'11',Dec:'12' };
-            const m = months[match2[2].substring(0,3)] || '01';
-            return new Date(`20${match2[1]}-${m}-${match2[3]}T${match2[4]}:${match2[5]}:00Z`);
+            const months: Record<string, number> = { 
+               Jan:1, Feb:2, Mar:3, Apr:4, May:5, Jun:6, Jul:7, Aug:8, Sep:9, Oct:10, Nov:11, Dec:12,
+               jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12
+            };
+            const y = 2000 + parseInt(match2[1], 10);
+            const m = months[match2[2].substring(0,3)];
+            const d = parseInt(match2[3], 10);
+            const h = parseInt(match2[4], 10);
+            const min = parseInt(match2[5], 10);
+            if (m && validateParts(y, m, d, h, min)) {
+              return new Date(Date.UTC(y, m - 1, d, h, min, 0));
+            }
           }
 
           // Case 3: 2026-09-04 1900 (YYYY-MM-DD HHmm)
           const regexYYYYMMDDHHmm = /^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):?(\d{2})$/;
           const match3 = cleanVal.match(regexYYYYMMDDHHmm);
           if (match3) {
-            return new Date(`${match3[1]}-${match3[2]}-${match3[3]}T${match3[4]}:${match3[5]}:00Z`);
+            const y = parseInt(match3[1], 10);
+            const m = parseInt(match3[2], 10);
+            const d = parseInt(match3[3], 10);
+            const h = parseInt(match3[4], 10);
+            const min = parseInt(match3[5], 10);
+            if (validateParts(y, m, d, h, min)) {
+              return new Date(Date.UTC(y, m - 1, d, h, min, 0));
+            }
           }
 
-          // Fallback
-          const date = new Date(cleanVal);
-          return isNaN(date.getTime()) ? null : date;
+          this.logger.warn(`Failed to parse date for ${vName}: '${cleanVal}'`);
+          return null;
         };
 
         // Bollard Meter Calculation
@@ -105,16 +136,33 @@ export class DataParserService {
           calculatedAft = bollards[bollardAftId] + offset;
         }
 
-        records.push({
+        const eta = parseRsgtDate(row['ETA'], vesselName);
+        const ata = parseRsgtDate(row['ATA'], vesselName);
+        const etd = parseRsgtDate(row['ETD'], vesselName);
+        const estTimeOfBerth = parseRsgtDate(row['Est. Time of Berth'], vesselName);
+        const atb = parseRsgtDate(row['ATB'], vesselName);
+        const atd = parseRsgtDate(row['ATD'], vesselName);
+
+        const record: VesselScheduleRecord = {
           vesselName: row['Vessel Name'],
           status: row['Phase'],
           loa: parseFloat(row['Vessel Loa M']) || 0,
           foreMeter: calculatedFore,
           aftMeter: calculatedAft,
-          eta: parseDate(row['ETA']),
-          ata: parseDate(row['ATA']),
-          etd: parseDate(row['ETD']),
-        });
+          eta,
+          ata,
+          etd,
+          estTimeOfBerth,
+          atb,
+          atd,
+          berthZone: row['vessel berth']?.trim() || 'UNKNOWN',
+        };
+
+        const range = this.getVesselOccupancyRange(record);
+        record.occupancyStart = range.startTime;
+        record.occupancyEnd = range.endTime;
+
+        records.push(record);
       } catch (err: any) {
         errors.push({
           vesselName: vesselName,
@@ -124,5 +172,20 @@ export class DataParserService {
     }
 
     return { records, errors };
+  }
+
+  getVesselOccupancyRange(vessel: VesselScheduleRecord): { startTime: Date | null, endTime: Date | null } {
+    let start: Date | null = null;
+    let end: Date | null = null;
+    
+    if (vessel.status === 'Working') {
+      start = vessel.atb ?? vessel.estTimeOfBerth ?? vessel.ata ?? vessel.eta;
+      end = vessel.atd ?? vessel.etd;
+    } else {
+      start = vessel.estTimeOfBerth ?? vessel.eta;
+      end = vessel.etd;
+    }
+    
+    return { startTime: start, endTime: end };
   }
 }

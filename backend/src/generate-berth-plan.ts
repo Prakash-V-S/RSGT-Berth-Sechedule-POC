@@ -5,6 +5,7 @@ import { AppModule } from './app.module';
 import { ConfigService } from '@nestjs/config';
 import { CsvReaderService } from './csv-reader/csv-reader.service';
 import { DataParserService } from './data-parser/data-parser.service';
+import { PositionEngineService } from './position-engine/position-engine.service';
 import { ExcelGeneratorService } from './excel-generator/excel-generator.service';
 
 async function bootstrap() {
@@ -12,6 +13,7 @@ async function bootstrap() {
   const configService = app.get(ConfigService);
   const csvReader = app.get(CsvReaderService);
   const dataParser = app.get(DataParserService);
+  const positionEngine = app.get(PositionEngineService);
   const excelGenerator = app.get(ExcelGeneratorService);
 
   const inputPath = configService.get<string>('INPUT_CSV_PATH') || './data/vessels.csv';
@@ -43,8 +45,18 @@ async function bootstrap() {
   console.log('Processing berth plan...');
   console.log();
 
+  // 2.5 Run Position Engine
+  const processed = records.map(record => {
+    try {
+      const pos = positionEngine.computePosition(record);
+      return { record: record, isValid: true, position: pos.position };
+    } catch (e: any) {
+      return { record: record, isValid: false, error: e.message };
+    }
+  });
+
   // 3. Generate Excel Plan (handles math & positions inside the service)
-  const result = await excelGenerator.generateBerthPlan(records, outputPath);
+  const result = await excelGenerator.generateBerthPlan(processed, outputPath);
 
   console.log(`Successfully processed: ${result.successful}`);
   console.log(`Validation errors: ${result.invalid + parseErrors.length}`);
