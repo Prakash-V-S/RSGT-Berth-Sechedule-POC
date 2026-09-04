@@ -18,4 +18,13 @@ export interface VesselScheduleRecord {
   berthZone?: string;
   occupancyStart?: Date | null;
   occupancyEnd?: Date | null;
+
+  // Operational details for display
+  service?: string;
+  beam?: number;
+  moves?: number;
+  discharge?: number;
+  load?: number;
+  draftForward?: number;
+  draftAft?: number;
 }

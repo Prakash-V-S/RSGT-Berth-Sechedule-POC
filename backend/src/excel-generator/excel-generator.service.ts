@@ -20,7 +20,7 @@ export class ExcelGeneratorService {
     return d;
   }
 
-  async generateBerthPlan(processed: { record: any; isValid: boolean; error?: string; position?: CalculatedPosition }[], outputPath: string) {
+  async generateBerthPlan(processed: { record: any; isValid: boolean; error?: string; position?: CalculatedPosition }[], outputPath: string): Promise<{total: number, successful: number, invalid: number, errors: any[]}> {
     if (!fs.existsSync(this.TEMPLATE_PATH)) {
       throw new Error(`Template not found at ${this.TEMPLATE_PATH}`);
     }
@@ -30,6 +30,24 @@ export class ExcelGeneratorService {
     const mainSheet = workbook.getWorksheet('MAIN BERTH PLAN');
     if (!mainSheet) {
       throw new Error('MAIN BERTH PLAN sheet not found in template.');
+    }
+
+    // --- CLEAR OLD TEMPLATE DATA (rows 11+) ---
+    // This ensures every run starts clean from the base header-only template.
+    this.logger.log('Clearing old template data...');
+
+    // 1. Remove all embedded images
+    (mainSheet as any).media = [];
+
+    // 2. Clear all cell values and fills from row 11 downwards
+    const lastRow = Math.max(mainSheet.rowCount, 300);
+    for (let r = 11; r <= lastRow; r++) {
+      const row = mainSheet.getRow(r);
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        cell.value = null;
+        cell.fill = { type: 'pattern', pattern: 'none' };
+      });
+      row.commit();
     }
 
     // --- PHASE 3: METER MAPPING ---
@@ -117,19 +135,17 @@ export class ExcelGeneratorService {
         for (let c = 10; c <= 13; c++) {
             const cell = mainSheet.getCell(r, c);
             cell.value = null;
-            // Clear borders completely for time/date columns except when we re-add them
             cell.border = {};
             if (cell.isMerged) {
                 try { mainSheet.unMergeCells(cell.address); } catch (e) {}
             }
         }
-        // Clear old dummy blocks in columns A-G (1-7)
+        // Clear old dummy blocks in columns A-G (1-7) — no borders, no fills
         for (let c = 1; c <= 7; c++) {
             const cell = mainSheet.getCell(r, c);
             cell.value = null;
-            // Force a solid white fill to overwrite any template colors
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
-            cell.border = { top: {style:'thin'}, bottom: {style:'thin'}, left: {style:'thin'}, right: {style:'thin'} };
+            cell.fill = { type: 'pattern', pattern: 'none' };
+            cell.border = {};
             if (cell.isMerged) {
                 try { mainSheet.unMergeCells(cell.address); } catch (e) {}
             }
@@ -215,13 +231,21 @@ export class ExcelGeneratorService {
        this.logger.warn("No valid vessels found to plot!");
     }
 
+    // --- CLEAR OLD STICKY BACKGROUNDS ---
+    for (let r = 11; r <= (mainSheet.rowCount || 300); r++) {
+       for (let c = 1; c <= 4; c++) {
+          const cell = mainSheet.getCell(r, c);
+          cell.fill = { type: 'pattern', pattern: 'none' };
+          cell.value = null;
+       }
+    }
+
     // --- PHASE 3: IMAGE OVERLAYS TEST ---
-    const testMode = true; 
+    const testMode = false; 
     let drawn = 0;
     
     // In-memory conflict shapes
     const drawnShapes: { vesselName: string, berthSection: string, cMin: number, cMax: number, rMin: number, rMax: number }[] = [];
-    const logicalShapes: { col: number, rMin: number, rMax: number }[] = [];
 
     const getVesselOrientation = (rec: any) => {
        const berthside = (rec.berthside || '').toLowerCase();
@@ -254,56 +278,109 @@ export class ExcelGeneratorService {
        return colors[hash % colors.length];
     };
 
+    const formatCompactDate = (d: Date | null | undefined) => {
+        if (!d) return '';
+        const dd = d.getUTCDate().toString().padStart(2, '0');
+        const hh = d.getUTCHours().toString().padStart(2, '0');
+        const mm = d.getUTCMinutes().toString().padStart(2, '0');
+        return `${dd}/${hh}${mm}`;
+    };
+
+    const getLuminance = (hex: string) => {
+        let r = parseInt(hex.substring(1, 3), 16) / 255;
+        let g = parseInt(hex.substring(3, 5), 16) / 255;
+        let b = parseInt(hex.substring(5, 7), 16) / 255;
+        r = r <= 0.03928 ? r / 12.92 : Math.pow((r + 0.055) / 1.055, 2.4);
+        g = g <= 0.03928 ? g / 12.92 : Math.pow((g + 0.055) / 1.055, 2.4);
+        b = b <= 0.03928 ? b / 12.92 : Math.pow((b + 0.055) / 1.055, 2.4);
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+
     const getVesselBuffer = async (rec: any, colorHex: string, orientation: string, widthPx: number, heightPx: number): Promise<Buffer> => {
       const svgPath = path.join(process.cwd(), 'assets', 'vessel-silhouette.svg');
       let baseSvg = fs.readFileSync(svgPath, 'utf8');
       
-      // The master SVG is drawn HORIZONTALLY with the bow pointing RIGHT.
-      // In a berth schedule, the X-axis is physical length (meters), so the ship stays horizontal.
-      // The width corresponds to LOA, the height corresponds to Time duration.
       const targetW = Math.max(1, Math.round(widthPx));
       const targetH = Math.max(1, Math.round(heightPx));
       
-      // Replace currentColor with actual hex color
       let coloredSvg = baseSvg.replace(/currentColor/g, colorHex);
       
-      // Strip any existing width, height, and preserveAspectRatio from the <svg> tag
       coloredSvg = coloredSvg.replace(/<svg([^>]*?)(?:\s+(?:width|height|preserveAspectRatio)="[^"]*")([^>]*?)>/g, (match) => {
          return match.replace(/\s+(?:width|height|preserveAspectRatio)="[^"]*"/g, '');
       });
       
-      // Ensure SVG stretches exactly to the physical bounds
       coloredSvg = coloredSvg.replace('<svg', `<svg width="${targetW}" height="${targetH}" preserveAspectRatio="none"`);
       
       let sharpInstance = sharp(Buffer.from(coloredSvg));
       
-      // If Portside, bow points left (original points right, so we flop horizontally)
       if (orientation === 'PORT_FACING') {
          sharpInstance = sharpInstance.flop();
       }
 
-      // Add text overlay
+      const textColor = getLuminance(colorHex) > 0.3 ? '#000000' : '#FFFFFF';
+      
+      let labelMode = 'SMALL';
+      if (targetH >= 150) labelMode = 'LARGE';
+      else if (targetH >= 90) labelMode = 'MEDIUM';
+      
+      let elements = [];
+      const nameStr = rec.vesselName || 'Unknown';
+      const service = rec.service ? ` ${rec.service}` : '';
+      const nameLine = `${nameStr}${service}`;
+
+      const eta = formatCompactDate(rec.eta);
+      const etb = formatCompactDate(rec.estTimeOfBerth);
+      const etd = formatCompactDate(rec.etd);
+
+      const loaBeam = [];
+      if (rec.loa) loaBeam.push(`LOA ${rec.loa}M`);
+      if (rec.beam) loaBeam.push(`${rec.beam}M`);
+      const loaBeamStr = loaBeam.length > 0 ? loaBeam.join(' / ') : '';
+
+      const moves = rec.moves ? `MOVES ${rec.moves}` : '';
+      const disLoad = [];
+      if (rec.discharge !== undefined) disLoad.push(`DIS ${rec.discharge}`);
+      if (rec.load !== undefined) disLoad.push(`LOAD ${rec.load}`);
+      const disLoadStr = disLoad.length > 0 ? disLoad.join(' / ') : '';
+
+      const draft = [];
+      if (rec.draftForward) draft.push(rec.draftForward);
+      if (rec.draftAft) draft.push(rec.draftAft);
+      const draftStr = draft.length > 0 ? `DRAFT: ${draft.join('/')} M` : '';
+
+      if (labelMode === 'LARGE') {
+          elements.push(`<text x="50%" y="30%" class="title">${nameLine}</text>`);
+          if (loaBeamStr) elements.push(`<text x="50%" y="40%" class="text">${loaBeamStr}</text>`);
+          elements.push(`<text x="50%" y="50%" class="text">ETA ${eta}   ETB ${etb}   ETD ${etd}</text>`);
+          if (moves) elements.push(`<text x="50%" y="60%" class="text">${moves}</text>`);
+          if (disLoadStr) elements.push(`<text x="50%" y="70%" class="text">${disLoadStr}</text>`);
+          if (draftStr) elements.push(`<text x="50%" y="85%" class="text">${draftStr}</text>`);
+      } else if (labelMode === 'MEDIUM') {
+          elements.push(`<text x="50%" y="35%" class="title">${nameLine}</text>`);
+          elements.push(`<text x="50%" y="55%" class="text">ETA ${eta}  ETB ${etb}  ETD ${etd}</text>`);
+          if (moves) elements.push(`<text x="50%" y="70%" class="text">${moves}</text>`);
+          if (disLoadStr) elements.push(`<text x="50%" y="85%" class="text">${disLoadStr}</text>`);
+      } else {
+          elements.push(`<text x="50%" y="40%" class="title">${nameStr}</text>`);
+          elements.push(`<text x="50%" y="65%" class="text">ETA ${eta}   ETD ${etd}</text>`);
+      }
+
+      const startM = Math.round(Math.min(rec.foreMeter || 0, rec.aftMeter || 0));
+      const endM = Math.round(Math.max(rec.foreMeter || 0, rec.aftMeter || 0));
+
+      if (labelMode !== 'SMALL') {
+         if (startM > 0) elements.push(`<text x="15" y="25" class="meter" text-anchor="start">${startM}M</text>`);
+         if (endM > 0) elements.push(`<text x="${targetW - 15}" y="25" class="meter" text-anchor="end">${endM}M</text>`);
+      }
+
       const textSvg = `
         <svg width="${targetW}" height="${targetH}" xmlns="http://www.w3.org/2000/svg">
           <style>
-            .text {
-              font-family: sans-serif;
-              font-size: 11px;
-              fill: black;
-              font-weight: bold;
-              text-anchor: middle;
-              dominant-baseline: middle;
-            }
-            .subtext {
-              font-family: sans-serif;
-              font-size: 9px;
-              fill: black;
-              text-anchor: middle;
-              dominant-baseline: middle;
-            }
+            .title { font-family: sans-serif; font-size: 52px; font-weight: bold; fill: ${textColor}; text-anchor: middle; dominant-baseline: middle; }
+            .text { font-family: sans-serif; font-size: 44px; fill: ${textColor}; text-anchor: middle; dominant-baseline: middle; }
+            .meter { font-family: sans-serif; font-size: 48px; font-weight: bold; fill: ${textColor}; dominant-baseline: hanging; }
           </style>
-          <text x="50%" y="40%" class="text">${rec.vesselName || 'Unknown'}</text>
-          <text x="50%" y="60%" class="subtext">${rec.phase || ''}</text>
+          ${elements.join('\n')}
         </svg>
       `;
 
@@ -396,39 +473,72 @@ export class ExcelGeneratorService {
       
       // Load image master asset and convert to padded PNG Buffer
       const color = getVesselColor(rec);
-      
-      const logicalCol = LOGICAL_COLS_STATIC[rec.berthZone || 'UNKNOWN'];
-      if (logicalCol) {
-          const mergeRowStart = Math.floor(excelRowStart);
-          const mergeRowEnd = Math.floor(excelRowEnd) - 1;
-          if (mergeRowStart <= mergeRowEnd) {
-             let mergeConflict = false;
-             for (const shape of logicalShapes) {
-                if (shape.col === logicalCol && !(mergeRowEnd <= shape.rMin || mergeRowStart >= shape.rMax)) {
-                   mergeConflict = true;
-                   break;
-                }
-             }
 
-             if (!mergeConflict) {
-                try {
-                    mainSheet.mergeCells(mergeRowStart, logicalCol, mergeRowEnd, logicalCol);
-                    const mergedCell = mainSheet.getCell(mergeRowStart, logicalCol);
-                    mergedCell.fill = {
-                       type: 'pattern',
-                       pattern: 'solid',
-                       fgColor: { argb: 'FF' + color.replace('#', '') }
-                    };
-                    mergedCell.value = rec.vesselName;
-                    mergedCell.alignment = { vertical: 'middle', horizontal: 'center', textRotation: 90, wrapText: true };
-                    mergedCell.font = { bold: true, size: 8 };
-                    mergedCell.border = { top: {style:'thin'}, bottom: {style:'thin'}, left: {style:'thin'}, right: {style:'thin'} };
-                    logicalShapes.push({ col: logicalCol, rMin: mergeRowStart, rMax: mergeRowEnd + 1 });
-                } catch (e: any) {
-                    this.logger.warn(`Could not merge logical background for ${rec.vesselName}: ${e.message}`);
-                }
-             }
+      // --- LEFT STICKY AREA: SVG RECTANGLE OVERLAY ---
+      // Maps physical meter position into cols 1-4 (R1=0-400m, R2=400-800m, R3=800-1200m, R4=1200-1700m)
+      // Each zone is exactly 1 Excel column wide (fractional sub-positions within).
+      const STICKY_ZONES = [
+          { col: 1, mStart: 0,    mEnd: 400  },
+          { col: 2, mStart: 400,  mEnd: 800  },
+          { col: 3, mStart: 800,  mEnd: 1200 },
+          { col: 4, mStart: 1200, mEnd: 1700 },
+      ];
+      const STICKY_TOTAL_M = 1700; // total meter span of 4 columns
+
+      const getMeterToStickyCol = (meter: number): number => {
+          // clamp to 0-1700
+          const m = Math.max(0, Math.min(meter, STICKY_TOTAL_M));
+          for (const z of STICKY_ZONES) {
+              if (m >= z.mStart && m <= z.mEnd) {
+                  const fraction = (m - z.mStart) / (z.mEnd - z.mStart);
+                  return z.col - 1 + fraction; // 0-indexed fractional col for exceljs image anchor
+              }
           }
+          return 0;
+      };
+
+      const aftM = Math.min(rec.foreMeter || 0, rec.aftMeter || 0);
+      const foreM = Math.max(rec.foreMeter || 0, rec.aftMeter || 0);
+
+      const stickyXStart = getMeterToStickyCol(aftM);   // fractional 0-indexed col
+      const stickyXEnd   = getMeterToStickyCol(foreM);  // fractional 0-indexed col
+
+      // Y uses the same time functions as the main vessel (0-indexed for exceljs)
+      const stickyYStart = excelRowStart - 1;  // already fractional; convert to 0-indexed
+      const stickyYEnd   = excelRowEnd   - 1;
+
+      const stickyWidth  = stickyXEnd - stickyXStart;
+      const stickyHeight = stickyYEnd - stickyYStart;
+
+      // Only render if the rectangle has meaningful size and is within bounds
+      if (stickyWidth > 0 && stickyHeight > 0 && stickyXEnd > 0 && stickyXStart < 4) {
+          const rectSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" preserveAspectRatio="none"><rect x="0" y="0" width="100" height="100" fill="${color}" /></svg>`;
+
+          // Rasterize to PNG via sharp (pixel size doesn't matter much, will be stretched by Excel)
+          const rectPng = await sharp(Buffer.from(rectSvg))
+              .resize(50, 200, { fit: 'fill' })
+              .png()
+              .toBuffer();
+
+          const stickyImgId = workbook.addImage({
+              buffer: rectPng as any,
+              extension: 'png',
+          });
+
+          mainSheet.addImage(stickyImgId, {
+              tl: { col: stickyXStart, row: stickyYStart } as any,
+              br: { col: stickyXEnd,   row: stickyYEnd   } as any,
+              editAs: 'absolute'
+          });
+
+          console.log(`\n[STICKY RECT] Vessel: ${rec.vesselName}`);
+          console.log(`  Aft Meter: ${aftM}m  |  Fore Meter: ${foreM}m`);
+          console.log(`  Occupancy Start: ${new Date(startTimestamp).toISOString()}`);
+          console.log(`  Occupancy End:   ${new Date(endTimestamp).toISOString()}`);
+          console.log(`  X Start (0-idx col): ${stickyXStart.toFixed(4)}  |  X End: ${stickyXEnd.toFixed(4)}`);
+          console.log(`  Y Start (0-idx row): ${stickyYStart.toFixed(4)}  |  Y End: ${stickyYEnd.toFixed(4)}`);
+          console.log(`  Width: ${stickyWidth.toFixed(4)} cols  |  Height: ${stickyHeight.toFixed(4)} rows`);
+          console.log(`  Color: ${color}`);
       }
 
       // Limit internal rendering resolution to avoid Sharp crashes on huge durations,
@@ -444,8 +554,8 @@ export class ExcelGeneratorService {
       });
       
       mainSheet.addImage(imageId, {
-         tl: { col: excelColStart, row: excelRowStart } as any,
-         br: { col: excelColEnd, row: excelRowEnd } as any,
+         tl: { col: excelColStart - 1, row: excelRowStart - 1 } as any,
+         br: { col: excelColEnd - 1, row: excelRowEnd - 1 } as any,
          editAs: 'absolute'
       });
 
@@ -459,28 +569,31 @@ export class ExcelGeneratorService {
       });
 
       console.log(`\n========================================`);
-      console.log(`Vessel: ${rec.vesselName}`);
-      console.log(`Berth zone: ${rec.berthZone}`);
-      console.log(`Phase/status: ${rec.status}`);
-      console.log(`Raw start value: ${rec.estTimeOfBerth ? rec.estTimeOfBerth.toISOString() : (rec.ata ? rec.ata.toISOString() : (rec.eta ? rec.eta.toISOString() : 'N/A'))}`);
-      console.log(`Parsed start value: ${new Date(startTimestamp).toISOString()}`);
-      console.log(`Raw end value: ${rec.atd ? rec.atd.toISOString() : (rec.etd ? rec.etd.toISOString() : 'N/A')}`);
-      console.log(`Parsed end value: ${new Date(endTimestamp).toISOString()}`);
-      console.log(`Timeline start: ${scheduleStartDate.toISOString()}`);
-      console.log(`Timeline end: ${scheduleEndDate.toISOString()}`);
-      console.log(`Start row: ${excelRowStart.toFixed(4)}`);
-      console.log(`End row: ${excelRowEnd.toFixed(4)}`);
-      console.log(`Height: ${(excelRowEnd - excelRowStart).toFixed(2)}`);
-      console.log(`Sub-lane index: ${p.position!.subLaneIndex || 0}`);
-      console.log(`Maximum lanes: ${p.position!.berthMaxLanes || 1}`);
-      console.log(`Berth start column: ${berthInfo.start}`);
-      console.log(`Berth end column: ${berthInfo.end}`);
-      console.log(`Vessel X: ${excelColStart.toFixed(4)} to ${excelColEnd.toFixed(4)}`);
-      console.log(`Vessel width: ${finalVesselWidth.toFixed(4)}`);
+      console.log(`Vessel Name: ${rec.vesselName}`);
+      console.log(`Aft Meter: ${rec.aftMeter}m`);
+      console.log(`Fore Meter: ${rec.foreMeter}m`);
+      console.log(`Physical start column: ${excelColStart.toFixed(4)}`);
+      console.log(`Physical end column: ${excelColEnd.toFixed(4)}`);
+      console.log(`Occupancy start row: ${excelRowStart.toFixed(4)}`);
+      console.log(`Occupancy end row: ${excelRowEnd.toFixed(4)}`);
+      console.log(`Applied color: ${color}`);
+      
+      const draftLog = [];
+      if (rec.draftForward !== undefined) draftLog.push(rec.draftForward);
+      if (rec.draftAft !== undefined) draftLog.push(rec.draftAft);
+      const draftStrLog = draftLog.length > 0 ? `DRAFT: ${draftLog.join('/')} M` : 'N/A';
 
-      if (excelRowEnd - excelRowStart > 200) {
-          console.log(`⚠️ WARNING: Vessel height is unexpectedly large (${(excelRowEnd - excelRowStart).toFixed(2)} rows)! Please inspect date-to-row conversion.`);
-      }
+      console.log(`\nLabel Values:`);
+      console.log(`LOA: ${rec.loa || 'N/A'}`);
+      console.log(`Beam: ${rec.beam || 'N/A'}`);
+      console.log(`ETA: ${rec.eta ? rec.eta.toISOString() : 'N/A'}`);
+      console.log(`ETB: ${rec.estTimeOfBerth ? rec.estTimeOfBerth.toISOString() : 'N/A'}`);
+      console.log(`ETD: ${rec.etd ? rec.etd.toISOString() : 'N/A'}`);
+      console.log(`Moves: ${rec.moves || 'N/A'}`);
+      console.log(`Discharge: ${rec.discharge !== undefined ? rec.discharge : 'N/A'}`);
+      console.log(`Load: ${rec.load !== undefined ? rec.load : 'N/A'}`);
+      console.log(`RF: N/A`); // RF missing from CSV headers as requested
+      console.log(`Draft: ${draftStrLog}`);
 
       if (testMode) {
         console.log(`Conflict Result: No Conflict. Successfully drawn.`);

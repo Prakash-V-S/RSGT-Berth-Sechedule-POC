@@ -156,6 +156,13 @@ export class DataParserService {
           atb,
           atd,
           berthZone: row['vessel berth']?.trim() || 'UNKNOWN',
+          service: row['Service']?.trim(),
+          beam: parseFloat(row['BEAM M']) || undefined,
+          moves: parseInt(row['Total Moves'], 10) || undefined,
+          discharge: parseInt(row['Est Disch'], 10) || undefined,
+          load: parseInt(row['EST Loading'], 10) || undefined,
+          draftForward: parseFloat(row['Draft Forward']) || undefined,
+          draftAft: parseFloat(row['Draft Aft']) || undefined,
         };
 
         const range = this.getVesselOccupancyRange(record);
