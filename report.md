@@ -4,7 +4,7 @@ This document outlines the technical details of the RSGT Berth Schedule POC, spe
 
 ---
 
-## 1. Calculating Vessel Length and Height
+## 1. Calculating Vessel Length and Berth Occupancy Duration
 
 The application translates real-world vessel metrics (meters and time) into Excel cell dimensions (columns and rows) using a two-step process involving the **Position Engine** and the **Excel Generator**.
 
