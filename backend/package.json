@@ -7,7 +7,9 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
-    "generate:berth-plan": "npx ts-node src/generate-berth-plan.ts"
+    "generate:berth-plan": "npx ts-node src/generate-berth-plan.ts --format=both",
+    "generate:berth-plan:pdf": "npx ts-node src/generate-berth-plan.ts --format=pdf",
+    "generate:berth-plan:xlsx": "npx ts-node src/generate-berth-plan.ts --format=xlsx"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.0",

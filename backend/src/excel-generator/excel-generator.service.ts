@@ -5,6 +5,7 @@ import * as ExcelJS from 'exceljs';
 import * as path from 'path';
 import * as fs from 'fs';
 import { CalculatedPosition } from '../position-engine/position-engine.service';
+import { restoreTemplateHeaderShapes } from '../export/restore-template-shapes';
 const sharp = require('sharp');
 
 @Injectable()
@@ -40,8 +41,16 @@ export class ExcelGeneratorService {
     // This ensures every run starts clean from the base header-only template.
     this.logger.log('Clearing old template data...');
 
-    // 1. Remove all embedded images
-    (mainSheet as any).media = [];
+    // 1. Keep header images (logo / top nav); drop timeline leftovers only
+    const sheetMedia = (mainSheet as any).media as any[] | undefined;
+    if (Array.isArray(sheetMedia)) {
+      (mainSheet as any).media = sheetMedia.filter((m) => {
+        const row = m?.range?.tl?.nativeRow;
+        const w = Number(m?.range?.ext?.width || 0);
+        const h = Number(m?.range?.ext?.height || 0);
+        return typeof row === 'number' && row < 10 && w > 0 && h > 0;
+      });
+    }
 
     // 2. Clear existing template body only (do not invent empty rows)
     const templateBodyLastRow = mainSheet.rowCount || 11;
@@ -50,6 +59,7 @@ export class ExcelGeneratorService {
       row.eachCell({ includeEmpty: true }, (cell) => {
         cell.value = null;
         cell.fill = { type: 'pattern', pattern: 'none' };
+        cell.alignment = { vertical: 'middle', horizontal: 'center', textRotation: 0 };
       });
       row.commit();
     }
@@ -127,6 +137,37 @@ export class ExcelGeneratorService {
       left: { style: 'thin' as const, color: { argb: 'FF000000' } },
       right: { style: 'thin' as const, color: { argb: 'FF000000' } },
     });
+
+    const noneFill = (): ExcelJS.Fill => ({ type: 'pattern', pattern: 'none' });
+    const grayFill = (): ExcelJS.Fill => ({
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE7E6E6' },
+    });
+
+    /**
+     * ExcelJS shares style records — mutating cell.fill/alignment on one cell
+     * can paint gray + rotation across the whole sheet. Always replace `style`
+     * with a fresh object.
+     */
+    const setCellStyle = (
+      cell: ExcelJS.Cell,
+      opts: {
+        fill?: ExcelJS.Fill;
+        border?: Partial<ExcelJS.Borders>;
+        alignment?: Partial<ExcelJS.Alignment>;
+        font?: Partial<ExcelJS.Font>;
+      },
+    ) => {
+      cell.style = {
+        fill: opts.fill ? { ...opts.fill } : noneFill(),
+        border: opts.border ? JSON.parse(JSON.stringify(opts.border)) : {},
+        alignment: opts.alignment
+          ? { ...opts.alignment }
+          : { vertical: 'middle', horizontal: 'center', textRotation: 0 },
+        font: opts.font ? { ...opts.font } : { name: 'Calibri', size: 10 },
+      };
+    };
     
     const scheduleStartDate = minTime === Number.MAX_SAFE_INTEGER ? new Date() : new Date(minTime);
     // Align schedule start to the beginning of the 2-hour block
@@ -170,8 +211,7 @@ export class ExcelGeneratorService {
           try { mainSheet.unMergeCells(cell.address); } catch (e) {}
         }
         cell.value = null;
-        cell.fill = { type: 'pattern', pattern: 'none' };
-        cell.border = {};
+        setCellStyle(cell, { fill: noneFill(), border: {} });
       }
     }
 
@@ -179,7 +219,10 @@ export class ExcelGeneratorService {
     const paintRowGridBorders = (r: number, isDayEnd: boolean) => {
       for (let c = 1; c <= berthGridEndCol; c++) {
         if (c >= 10 && c <= 13) continue;
-        mainSheet.getCell(r, c).border = isDayEnd ? makeDayEndBorder() : makeThinBorder();
+        setCellStyle(mainSheet.getCell(r, c), {
+          fill: noneFill(),
+          border: isDayEnd ? makeDayEndBorder() : makeThinBorder(),
+        });
       }
     };
 
@@ -190,13 +233,17 @@ export class ExcelGeneratorService {
        const startH = h.toString().padStart(2, '0');
        const endHNum = h + 2;
        const endHStr = endHNum === 24 ? '24' : endHNum.toString().padStart(2, '0');
+       // Reference format: 0001-0200, 0201-0400 (horizontal)
        const timeLabel = `${startH}01-${endHStr}00`;
        
        const timeCell = mainSheet.getCell(rowCursor, 11);
        timeCell.value = timeLabel;
-       timeCell.alignment = { vertical: 'middle', horizontal: 'center' };
-       timeCell.border = makeThinBorder();
-       timeCell.font = { name: 'Calibri', size: 10 };
+       setCellStyle(timeCell, {
+         fill: grayFill(),
+         border: makeThinBorder(),
+         alignment: { vertical: 'middle', horizontal: 'center', textRotation: 0, wrapText: false },
+         font: { name: 'Calibri', size: 9 },
+       });
 
        const dd = dateObj.getUTCDate().toString().padStart(2, '0');
        const mm = (dateObj.getUTCMonth() + 1).toString().padStart(2, '0');
@@ -225,22 +272,22 @@ export class ExcelGeneratorService {
            try { mainSheet.mergeCells(info.startRow, 12, info.endRow, 12); } catch (e) {}
            try { mainSheet.mergeCells(info.startRow, 13, info.endRow, 13); } catch (e) {}
        }
-       const dateCell = mainSheet.getCell(info.startRow, 12);
-       dateCell.value = dateStr;
-       dateCell.alignment = { vertical: 'middle', horizontal: 'center', textRotation: 90 };
-       dateCell.border = makeThinBorder();
-       dateCell.fill = {
-           type: 'pattern',
-           pattern: 'solid',
-           fgColor: { argb: 'FFE7E6E6' }
-       };
-       dateCell.font = { bold: true };
-       
-       const dayCell = mainSheet.getCell(info.startRow, 13);
-       dayCell.value = info.dayName;
-       dayCell.alignment = { vertical: 'middle', horizontal: 'center', textRotation: 90 };
-       dayCell.border = makeThinBorder();
-       dayCell.font = { bold: true };
+       for (let r = info.startRow; r <= info.endRow; r++) {
+         setCellStyle(mainSheet.getCell(r, 12), {
+           fill: grayFill(),
+           border: makeThinBorder(),
+           alignment: { vertical: 'middle', horizontal: 'center', textRotation: 90 },
+           font: { bold: true, name: 'Calibri', size: 10 },
+         });
+         setCellStyle(mainSheet.getCell(r, 13), {
+           fill: noneFill(),
+           border: makeThinBorder(),
+           alignment: { vertical: 'middle', horizontal: 'center', textRotation: 90 },
+           font: { bold: true, name: 'Calibri', size: 10 },
+         });
+       }
+       mainSheet.getCell(info.startRow, 12).value = dateStr;
+       mainSheet.getCell(info.startRow, 13).value = info.dayName;
     }
 
     this.logger.log(
@@ -273,9 +320,11 @@ export class ExcelGeneratorService {
     for (let r = timelineStartRow; r <= lastTimelineRow; r++) {
        for (let c = 1; c <= 7; c++) {
           const cell = mainSheet.getCell(r, c);
-          cell.fill = { type: 'pattern', pattern: 'none' };
           cell.value = null;
-          // borders already set by paintRowGridBorders
+          setCellStyle(cell, {
+            fill: noneFill(),
+            border: makeThinBorder(),
+          });
        }
     }
 
@@ -795,19 +844,59 @@ export class ExcelGeneratorService {
     // Validation / conflict / valid summary lives on BERTH DETAILS (not MAIN BERTH PLAN)
     this.writeBerthDetailsSheet(workbook, processed, parseErrors);
 
-    // Re-paint grid borders AFTER vessel drawing (exceljs shared styles can drop earlier borders)
+    // Re-normalize timeline styles AFTER vessel drawing.
+    // ExcelJS shared styles can leak date gray/rotation onto the berth grid.
     for (let r = timelineStartRow; r <= lastTimelineRow; r++) {
       const timeVal = String(mainSheet.getCell(r, 11).value || '');
       const isDayEnd = timeVal.startsWith('2201');
-      paintRowGridBorders(r, isDayEnd);
-      // Keep time/date/day cell borders too
-      if (mainSheet.getCell(r, 11).value) {
-        mainSheet.getCell(r, 11).border = makeThinBorder();
+
+      // Sticky lanes + berth grid: white, borders only (no gray)
+      for (let c = 1; c <= berthGridEndCol; c++) {
+        if (c >= 11 && c <= 13) continue;
+        setCellStyle(mainSheet.getCell(r, c), {
+          fill: noneFill(),
+          border: isDayEnd ? makeDayEndBorder() : makeThinBorder(),
+        });
+      }
+
+      // Time column: light gray, horizontal 0001-0200
+      if (timeVal) {
+        setCellStyle(mainSheet.getCell(r, 11), {
+          fill: grayFill(),
+          border: makeThinBorder(),
+          alignment: { vertical: 'middle', horizontal: 'center', textRotation: 0, wrapText: false },
+          font: { name: 'Calibri', size: 9 },
+        });
       }
     }
     for (const info of daysMap.values()) {
-      mainSheet.getCell(info.startRow, 12).border = makeThinBorder();
-      mainSheet.getCell(info.startRow, 13).border = makeThinBorder();
+      for (let r = info.startRow; r <= info.endRow; r++) {
+        setCellStyle(mainSheet.getCell(r, 12), {
+          fill: grayFill(),
+          border: makeThinBorder(),
+          alignment: { vertical: 'middle', horizontal: 'center', textRotation: 90 },
+          font: { bold: true, name: 'Calibri', size: 10 },
+        });
+        setCellStyle(mainSheet.getCell(r, 13), {
+          fill: noneFill(),
+          border: makeThinBorder(),
+          alignment: { vertical: 'middle', horizontal: 'center', textRotation: 90 },
+          font: { bold: true, name: 'Calibri', size: 10 },
+        });
+      }
+    }
+
+    // Strip extra columns past berth grid (template had cols out to ~123 with leaked borders/gray)
+    const maxCol = Math.max(mainSheet.columnCount || berthGridEndCol, berthGridEndCol + 1);
+    for (let c = berthGridEndCol + 1; c <= maxCol; c++) {
+      try {
+        mainSheet.getColumn(c).hidden = true;
+      } catch (e) {}
+      for (let r = timelineStartRow; r <= lastTimelineRow; r++) {
+        const cell = mainSheet.getCell(r, c);
+        cell.value = null;
+        setCellStyle(cell, { fill: noneFill(), border: {} });
+      }
     }
 
     // --- STOP AFTER LAST DATE/TIME ROW: no empty grids below ---
@@ -831,12 +920,41 @@ export class ExcelGeneratorService {
         zoomScale: 70,
       },
     ];
+    // Fit content to one landscape page — template ships with scale=10% which leaves huge PDF whitespace
+    const printArea = `A1:${mainSheet.getColumn(berthGridEndCol).letter}${lastTimelineRow}`;
     try {
-      mainSheet.pageSetup.printArea = `A1:${mainSheet.getColumn(berthGridEndCol).letter}${lastTimelineRow}`;
+      mainSheet.pageSetup = {
+        ...mainSheet.pageSetup,
+        printArea,
+        orientation: 'landscape',
+        fitToPage: true,
+        fitToWidth: 1,
+        fitToHeight: 1,
+        scale: 100,
+        horizontalCentered: true,
+        verticalCentered: true,
+        margins: {
+          left: 0.25,
+          right: 0.25,
+          top: 0.25,
+          bottom: 0.25,
+          header: 0.1,
+          footer: 0.1,
+        },
+      };
     } catch (e) {}
-    this.logger.log(`Sheet trimmed after row ${lastTimelineRow}; right borders applied; no extra date/time rows`);
+    this.logger.log(`Sheet trimmed after row ${lastTimelineRow}; print area ${printArea}; fit-to-page enabled`);
 
     await workbook.xlsx.writeFile(outputPath);
+
+    // ExcelJS drops AutoShapes on write — restore top-nav legend / draft marker shapes
+    try {
+      const restored = await restoreTemplateHeaderShapes(this.TEMPLATE_PATH, outputPath);
+      this.logger.log(`Restored ${restored} template header shapes into output workbook`);
+    } catch (e: any) {
+      this.logger.warn(`Could not restore template header shapes: ${e?.message || e}`);
+    }
+
     return {
       total: processed.length + parseErrors.length,
       successful: drawn,
