@@ -996,8 +996,11 @@ export class ExcelGeneratorService {
       'Aft Meter',
       'Fore Meter',
       'ETA',
+      'ATA',
       'ETB',
+      'ATB',
       'ETD',
+      'ATD',
       'Moves',
       'Discharge',
       'Load',
@@ -1087,8 +1090,11 @@ export class ExcelGeneratorService {
         rec.aftMeter ?? '',
         rec.foreMeter ?? '',
         fmt(rec.eta),
+        fmt(rec.ata),
         fmt(rec.estTimeOfBerth),
+        fmt(rec.atb),
         fmt(rec.etd),
+        fmt(rec.atd),
         rec.moves ?? '',
         rec.discharge ?? '',
         rec.load ?? '',
@@ -1102,7 +1108,7 @@ export class ExcelGeneratorService {
         sno,
         'INVALID',
         err.vesselName || 'Unknown',
-        '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
+        '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
         err.message || 'Parse error',
       ], 'INVALID');
     }
@@ -1128,7 +1134,7 @@ export class ExcelGeneratorService {
     });
     sheet.getRow(summaryStart).getCell(1).font = { bold: true, size: 12, color: { argb: 'FF1F4E79' } };
 
-    const widths = [8, 12, 22, 8, 12, 10, 12, 10, 10, 10, 10, 18, 18, 18, 8, 10, 8, 12, 36];
+    const widths = [8, 12, 22, 8, 12, 10, 12, 10, 10, 10, 10, 18, 18, 18, 18, 18, 18, 8, 10, 8, 12, 36];
     widths.forEach((w, i) => { sheet.getColumn(i + 1).width = w; });
 
     this.logger.log(
