@@ -920,7 +920,7 @@ export class ExcelGeneratorService {
         zoomScale: 70,
       },
     ];
-    // Fit content to one landscape page — template ships with scale=10% which leaves huge PDF whitespace
+    // Print setup for Excel/PDF: fit width, tiny margins (PDF COM re-applies these too)
     const printArea = `A1:${mainSheet.getColumn(berthGridEndCol).letter}${lastTimelineRow}`;
     try {
       mainSheet.pageSetup = {
@@ -929,21 +929,21 @@ export class ExcelGeneratorService {
         orientation: 'landscape',
         fitToPage: true,
         fitToWidth: 1,
-        fitToHeight: 1,
+        fitToHeight: 0,
         scale: 100,
         horizontalCentered: true,
-        verticalCentered: true,
+        verticalCentered: false,
         margins: {
-          left: 0.25,
-          right: 0.25,
-          top: 0.25,
-          bottom: 0.25,
-          header: 0.1,
-          footer: 0.1,
+          left: 5 / 72,
+          right: 5 / 72,
+          top: 5 / 72,
+          bottom: 5 / 72,
+          header: 0,
+          footer: 0,
         },
       };
     } catch (e) {}
-    this.logger.log(`Sheet trimmed after row ${lastTimelineRow}; print area ${printArea}; fit-to-page enabled`);
+    this.logger.log(`Sheet trimmed after row ${lastTimelineRow}; print area ${printArea}; fit-to-width enabled`);
 
     await workbook.xlsx.writeFile(outputPath);
 
