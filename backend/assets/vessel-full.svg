@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="160" viewBox="0 0 640 160">
+  <!-- Full top-down container ship, bow pointing RIGHT (starboard default). Clear pointed bow + flat stern. -->
+  <defs>
+    <linearGradient id="hull" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1e3a5f"/>
+      <stop offset="50%" stop-color="#2c5282"/>
+      <stop offset="100%" stop-color="#1e3a5f"/>
+    </linearGradient>
+    <linearGradient id="deck" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#4a5568"/>
+      <stop offset="100%" stop-color="#2d3748"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Water wake behind stern (left) -->
+  <ellipse cx="42" cy="80" rx="28" ry="18" fill="#7dd3fc" opacity="0.55"/>
+  <ellipse cx="28" cy="80" rx="18" ry="12" fill="#bae6fd" opacity="0.4"/>
+
+  <!-- Hull outline: flat stern left, pointed bow right -->
+  <path d="M 55,28
+           L 520,28
+           C 560,28 600,48 625,80
+           C 600,112 560,132 520,132
+           L 55,132
+           C 40,132 32,118 32,100
+           L 32,60
+           C 32,42 40,28 55,28 Z"
+        fill="url(#hull)" stroke="#0f2744" stroke-width="3"/>
+
+  <!-- Bridge / superstructure near stern -->
+  <rect x="70" y="38" width="48" height="84" rx="4" fill="#cbd5e1" stroke="#64748b" stroke-width="1.5"/>
+  <rect x="78" y="48" width="32" height="18" rx="2" fill="#94a3b8"/>
+  <rect x="78" y="74" width="32" height="18" rx="2" fill="#94a3b8"/>
+  <rect x="78" y="100" width="32" height="12" rx="2" fill="#64748b"/>
+
+  <!-- Container stacks (colorful, full length to bow) -->
+  <g>
+    <!-- row bands -->
+    <rect x="130" y="40" width="52" height="28" fill="#2563eb"/>
+    <rect x="130" y="70" width="52" height="28" fill="#dc2626"/>
+    <rect x="130" y="100" width="52" height="20" fill="#ea580c"/>
+
+    <rect x="190" y="40" width="52" height="28" fill="#16a34a"/>
+    <rect x="190" y="70" width="52" height="28" fill="#2563eb"/>
+    <rect x="190" y="100" width="52" height="20" fill="#ca8a04"/>
+
+    <rect x="250" y="40" width="52" height="28" fill="#dc2626"/>
+    <rect x="250" y="70" width="52" height="28" fill="#ea580c"/>
+    <rect x="250" y="100" width="52" height="20" fill="#2563eb"/>
+
+    <rect x="310" y="40" width="52" height="28" fill="#7c3aed"/>
+    <rect x="310" y="70" width="52" height="28" fill="#16a34a"/>
+    <rect x="310" y="100" width="52" height="20" fill="#dc2626"/>
+
+    <rect x="370" y="40" width="52" height="28" fill="#ea580c"/>
+    <rect x="370" y="70" width="52" height="28" fill="#2563eb"/>
+    <rect x="370" y="100" width="52" height="20" fill="#16a34a"/>
+
+    <rect x="430" y="40" width="52" height="28" fill="#2563eb"/>
+    <rect x="430" y="70" width="52" height="28" fill="#ca8a04"/>
+    <rect x="430" y="100" width="52" height="20" fill="#dc2626"/>
+
+    <rect x="490" y="46" width="40" height="24" fill="#dc2626"/>
+    <rect x="490" y="72" width="40" height="24" fill="#2563eb"/>
+    <rect x="490" y="98" width="40" height="18" fill="#ea580c"/>
+  </g>
+
+  <!-- Bow tip highlight so direction is obvious -->
+  <path d="M 560,55 L 620,80 L 560,105 Z" fill="#fbbf24" opacity="0.85"/>
+  <polygon points="600,80 575,68 575,92" fill="#1e3a5f"/>
+
+  <!-- Direction label chevron on bow -->
+  <polygon points="635,80 610,68 610,92" fill="#ef4444"/>
+</svg>

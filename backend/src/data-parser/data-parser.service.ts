@@ -163,6 +163,10 @@ export class DataParserService {
           load: parseInt(row['EST Loading'], 10) || undefined,
           draftForward: parseFloat(row['Draft Forward']) || undefined,
           draftAft: parseFloat(row['Draft Aft']) || undefined,
+          berthside: row['Berthside']?.trim() || undefined,
+          line: row['Line']?.trim() || undefined,
+          previousPort: row['Previous Port']?.trim() || undefined,
+          nextPort: row['Next Port']?.trim() || undefined,
         };
 
         const range = this.getVesselOccupancyRange(record);

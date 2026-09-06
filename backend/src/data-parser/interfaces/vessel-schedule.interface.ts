@@ -27,4 +27,9 @@ export interface VesselScheduleRecord {
   load?: number;
   draftForward?: number;
   draftAft?: number;
+  /** CSV Berthside: Portside | Starboardside — drives ship image orientation */
+  berthside?: string;
+  line?: string;
+  previousPort?: string;
+  nextPort?: string;
 }
