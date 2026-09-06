@@ -12,7 +12,7 @@ export class ExcelGeneratorService {
   private readonly logger = new Logger(ExcelGeneratorService.name);
 
   // Hardcoded as requested
-  private readonly TEMPLATE_PATH = 'D:/RSGT Berth Sechedule POC/rsgt-berth-schedule/empty-template.xlsx';
+  private readonly TEMPLATE_PATH = path.join(process.cwd(), 'template', 'empty-template.xlsx');
 
   private addDays(date: Date, days: number): Date {
     const d = new Date(date);
