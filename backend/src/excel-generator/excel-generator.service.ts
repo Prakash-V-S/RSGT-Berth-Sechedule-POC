@@ -39,9 +39,9 @@ export class ExcelGeneratorService {
     // 1. Remove all embedded images
     (mainSheet as any).media = [];
 
-    // 2. Clear all cell values and fills from row 11 downwards
-    const lastRow = Math.max(mainSheet.rowCount, 300);
-    for (let r = 11; r <= lastRow; r++) {
+    // 2. Clear existing template body only (do not invent empty rows)
+    const templateBodyLastRow = mainSheet.rowCount || 11;
+    for (let r = 11; r <= templateBodyLastRow; r++) {
       const row = mainSheet.getRow(r);
       row.eachCell({ includeEmpty: true }, (cell) => {
         cell.value = null;
@@ -103,19 +103,41 @@ export class ExcelGeneratorService {
       }
     }
     
-    // Configurable interval mapping as requested
     const intervalMinutes = 120;
     const rowsPerInterval = 1;
     const timelineStartRow = 11;
+    const berthGridStartCol = 14; // first berth meter column
+    const berthGridEndCol = 68;   // last R4 column
+    const templateLastRow = Math.max(mainSheet.rowCount || timelineStartRow, timelineStartRow);
+
+    const makeThinBorder = () => ({
+      top: { style: 'thin' as const, color: { argb: 'FF000000' } },
+      bottom: { style: 'thin' as const, color: { argb: 'FF000000' } },
+      left: { style: 'thin' as const, color: { argb: 'FF000000' } },
+      right: { style: 'thin' as const, color: { argb: 'FF000000' } },
+    });
+
+    const makeDayEndBorder = () => ({
+      top: { style: 'thin' as const, color: { argb: 'FF000000' } },
+      bottom: { style: 'medium' as const, color: { argb: 'FF000000' } },
+      left: { style: 'thin' as const, color: { argb: 'FF000000' } },
+      right: { style: 'thin' as const, color: { argb: 'FF000000' } },
+    });
     
     const scheduleStartDate = minTime === Number.MAX_SAFE_INTEGER ? new Date() : new Date(minTime);
     // Align schedule start to the beginning of the 2-hour block
     scheduleStartDate.setUTCMinutes(0, 0, 0);
     scheduleStartDate.setUTCHours(Math.floor(scheduleStartDate.getUTCHours() / 2) * 2);
 
-    const scheduleEndDate = maxTime === Number.MIN_SAFE_INTEGER ? new Date(scheduleStartDate.getTime() + 24 * 60 * 60 * 1000) : new Date(maxTime);
+    // End exactly at last vessel time (snapped up to 2h). No extra buffer day.
+    const scheduleEndDate = maxTime === Number.MIN_SAFE_INTEGER
+      ? new Date(scheduleStartDate.getTime() + 24 * 60 * 60 * 1000)
+      : new Date(maxTime);
     scheduleEndDate.setUTCMinutes(0, 0, 0);
     scheduleEndDate.setUTCHours(Math.ceil(scheduleEndDate.getUTCHours() / 2) * 2);
+    if (scheduleEndDate.getTime() <= scheduleStartDate.getTime()) {
+      scheduleEndDate.setTime(scheduleStartDate.getTime() + intervalMinutes * 60000);
+    }
 
     const getFractionalRowForTime = (time: Date) => {
       if (!time) return -1;
@@ -125,64 +147,71 @@ export class ExcelGeneratorService {
       return timelineStartRow + (intervalsDiff * rowsPerInterval);
     };
 
+    const plannedSlots = Math.max(
+      1,
+      Math.ceil((scheduleEndDate.getTime() - scheduleStartDate.getTime()) / (intervalMinutes * 60000)),
+    );
+    const lastTimelineRow = timelineStartRow + plannedSlots - 1;
+
     // --- PHASE 5: TIMELINE GENERATION ---
     const daysMap = new Map<string, { startRow: number, endRow: number, dayName: string }>();
     let rowCursor = timelineStartRow;
-    
-    // Pre-clear all potential timeline rows to avoid residual template colors
-    for (let r = timelineStartRow; r < 1000; r++) {
-        // Clear old template values in columns J, K, L, M (10-13)
-        for (let c = 10; c <= 13; c++) {
-            const cell = mainSheet.getCell(r, c);
-            cell.value = null;
-            cell.border = {};
-            if (cell.isMerged) {
-                try { mainSheet.unMergeCells(cell.address); } catch (e) {}
-            }
+
+    // Clear template leftovers without creating rows past the real schedule
+    const clearThrough = Math.max(templateLastRow, lastTimelineRow);
+    for (let r = timelineStartRow; r <= clearThrough; r++) {
+      for (let c = 1; c <= berthGridEndCol; c++) {
+        const cell = mainSheet.getCell(r, c);
+        if (cell.isMerged) {
+          try { mainSheet.unMergeCells(cell.address); } catch (e) {}
         }
-        // Clear old dummy blocks in columns A-I (1-9) but keep the grid borders
-        for (let c = 1; c <= 9; c++) {
-            const cell = mainSheet.getCell(r, c);
-            cell.value = null;
-            cell.fill = { type: 'pattern', pattern: 'none' };
-            cell.border = { top: {style:'thin'}, bottom: {style:'thin'}, left: {style:'thin'}, right: {style:'thin'} };
-            if (cell.isMerged) {
-                try { mainSheet.unMergeCells(cell.address); } catch (e) {}
-            }
-        }
+        cell.value = null;
+        cell.fill = { type: 'pattern', pattern: 'none' };
+        cell.border = {};
+      }
     }
+
+    /** Apply left sticky + right berth-grid borders for one timeline row (template right borders removed). */
+    const paintRowGridBorders = (r: number, isDayEnd: boolean) => {
+      for (let c = 1; c <= berthGridEndCol; c++) {
+        if (c >= 10 && c <= 13) continue;
+        mainSheet.getCell(r, c).border = isDayEnd ? makeDayEndBorder() : makeThinBorder();
+      }
+    };
 
     for (let t = scheduleStartDate.getTime(); t < scheduleEndDate.getTime(); t += intervalMinutes * 60000) {
        const dateObj = new Date(t);
        
-       // Format Time Range for Col 11 (K)
-       // e.g. 18:00 -> "1801-2000", 00:00 -> "0001-0200", 22:00 -> "2201-2400"
        const h = dateObj.getUTCHours();
        const startH = h.toString().padStart(2, '0');
-       let endHNum = h + 2;
-       // Excel usually uses 2400 for midnight end
-       const endHStr = endHNum.toString().padStart(2, '0');
+       const endHNum = h + 2;
+       const endHStr = endHNum === 24 ? '24' : endHNum.toString().padStart(2, '0');
        const timeLabel = `${startH}01-${endHStr}00`;
        
        const timeCell = mainSheet.getCell(rowCursor, 11);
        timeCell.value = timeLabel;
        timeCell.alignment = { vertical: 'middle', horizontal: 'center' };
-       timeCell.border = { top: {style:'thin'}, bottom: {style:'thin'}, left: {style:'thin'}, right: {style:'thin'} };
+       timeCell.border = makeThinBorder();
        timeCell.font = { name: 'Calibri', size: 10 };
 
-       // Format Date to DD-MM-YYYY
        const dd = dateObj.getUTCDate().toString().padStart(2, '0');
        const mm = (dateObj.getUTCMonth() + 1).toString().padStart(2, '0');
        const yyyy = dateObj.getUTCFullYear();
        const dateStr = `${dd}-${mm}-${yyyy}`;
-       
        const dayStr = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][dateObj.getUTCDay()];
+
+       // Day ends at last 2h slot of the calendar day (2201-2400)
+       const isDayEnd = h === 22;
 
        if (!daysMap.has(dateStr)) {
           daysMap.set(dateStr, { startRow: rowCursor, endRow: rowCursor + rowsPerInterval - 1, dayName: dayStr });
        } else {
           daysMap.get(dateStr)!.endRow = rowCursor + rowsPerInterval - 1;
        }
+
+       // Right-side berth grid borders (user cleared these from empty template)
+       paintRowGridBorders(rowCursor, isDayEnd);
+
        rowCursor += rowsPerInterval;
     }
 
@@ -195,20 +224,25 @@ export class ExcelGeneratorService {
        const dateCell = mainSheet.getCell(info.startRow, 12);
        dateCell.value = dateStr;
        dateCell.alignment = { vertical: 'middle', horizontal: 'center', textRotation: 90 };
-       dateCell.border = { top: {style:'thin'}, bottom: {style:'thin'}, left: {style:'thin'}, right: {style:'thin'} };
+       dateCell.border = makeThinBorder();
        dateCell.fill = {
            type: 'pattern',
            pattern: 'solid',
-           fgColor: { argb: 'FFE7E6E6' } // Light grey background like the screenshot
+           fgColor: { argb: 'FFE7E6E6' }
        };
        dateCell.font = { bold: true };
        
        const dayCell = mainSheet.getCell(info.startRow, 13);
        dayCell.value = info.dayName;
        dayCell.alignment = { vertical: 'middle', horizontal: 'center', textRotation: 90 };
-       dayCell.border = { top: {style:'thin'}, bottom: {style:'thin'}, left: {style:'thin'}, right: {style:'thin'} };
+       dayCell.border = makeThinBorder();
        dayCell.font = { bold: true };
     }
+
+    this.logger.log(
+      `Timeline ${scheduleStartDate.toISOString()} → ${scheduleEndDate.toISOString()} ` +
+      `(rows ${timelineStartRow}–${lastTimelineRow}, ${plannedSlots} slots); right-side borders painted`,
+    );
 
     // --- PHASE 6: STATIC BERTH MAPPING ---
     const BERTH_COLS_STATIC: Record<string, { start: number, end: number }> = {
@@ -231,12 +265,13 @@ export class ExcelGeneratorService {
        this.logger.warn("No valid vessels found to plot!");
     }
 
-    // --- CLEAR OLD STICKY BACKGROUNDS (R1–R4, B6, B4, B7) ---
-    for (let r = 11; r <= (mainSheet.rowCount || 300); r++) {
+    // --- CLEAR OLD STICKY BACKGROUNDS (R1–R4, B6, B4, B7) keep borders ---
+    for (let r = timelineStartRow; r <= lastTimelineRow; r++) {
        for (let c = 1; c <= 7; c++) {
           const cell = mainSheet.getCell(r, c);
           cell.fill = { type: 'pattern', pattern: 'none' };
           cell.value = null;
+          // borders already set by paintRowGridBorders
        }
     }
 
@@ -752,7 +787,47 @@ export class ExcelGeneratorService {
       return { total: 1, successful: 1, invalid: 0, errors: [] as { vesselName: string, message: string }[] };
     }
 
-    // In normal mode we would write to outputPath
+    // Re-paint grid borders AFTER vessel drawing (exceljs shared styles can drop earlier borders)
+    for (let r = timelineStartRow; r <= lastTimelineRow; r++) {
+      const timeVal = String(mainSheet.getCell(r, 11).value || '');
+      const isDayEnd = timeVal.startsWith('2201');
+      paintRowGridBorders(r, isDayEnd);
+      // Keep time/date/day cell borders too
+      if (mainSheet.getCell(r, 11).value) {
+        mainSheet.getCell(r, 11).border = makeThinBorder();
+      }
+    }
+    for (const info of daysMap.values()) {
+      mainSheet.getCell(info.startRow, 12).border = makeThinBorder();
+      mainSheet.getCell(info.startRow, 13).border = makeThinBorder();
+    }
+
+    // --- STOP AFTER LAST DATE/TIME ROW: no empty grids below ---
+    // IMPORTANT: do NOT assign cell.border = {} on leftover rows — exceljs uses
+    // shared styles, so clearing borders there also wipes the painted schedule grid.
+    const maxRowProbe = Math.max(mainSheet.rowCount || lastTimelineRow, templateLastRow, lastTimelineRow + 50);
+    for (let r = lastTimelineRow + 1; r <= maxRowProbe; r++) {
+      const row = mainSheet.getRow(r);
+      row.hidden = true;
+      row.height = 0.1;
+    }
+    const rowsArrFinal = (mainSheet as any)._rows as any[] | undefined;
+    if (rowsArrFinal && rowsArrFinal.length > lastTimelineRow + 1) {
+      rowsArrFinal.length = lastTimelineRow + 1;
+    }
+    mainSheet.views = [
+      {
+        state: 'normal',
+        showGridLines: false,
+        showRowColHeaders: true,
+        zoomScale: 70,
+      },
+    ];
+    try {
+      mainSheet.pageSetup.printArea = `A1:${mainSheet.getColumn(berthGridEndCol).letter}${lastTimelineRow}`;
+    } catch (e) {}
+    this.logger.log(`Sheet trimmed after row ${lastTimelineRow}; right borders applied; no extra date/time rows`);
+
     await workbook.xlsx.writeFile(outputPath);
     return {
       total: processed.length,

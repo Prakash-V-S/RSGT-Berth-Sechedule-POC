@@ -1,0 +1,6 @@
+﻿Displaying 4 item(s) at 2026-09-06,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+Visit,Vessel Name,Line,Vessel Class,I/B Vyg,O/B Vyg,Phase,Est. Time of Berth,ETD,ETA,ATA,ATD,ATB,Service,Vessel Loa M,BEAM M,Berthside,Bollard Fore,Bollard Fore offset,Bollard Aft,Bollard Aft offset,Draft Forward,Draft Aft,Est Disch,Previous Port,Next Port,EST Loading,Additional Moves,Total Moves,vessel berth,Bollard Fore Meter,Bollard Aft Meter,"LOA Check (Fore-Aft, m)"
+TSSNTSGP2606W,TS SINGAPORE,TSL,TSSN,TSGP2606W,TSGP2606W,Inbound,06-09-2026 0600,06-09-2026 1800,06-09-2026 0400,,,,ADHOC,260,32,Starboardside,1R19,6,1R2,1,,,,,JIB,,,,R1,291,31,0
+SIMOIS636E,MSC SIMONA,MSC,SIMO,IS634R,IS634R,Inbound,06-09-2026 0800,07-09-2026 0200,06-09-2026 0600,,,,ADHOC,366,51,Starboardside,3R65,0,2R37,-2,16.6,16.6,2136,AKI,JIB,2898,,5034,R2,760,420,0
+APOLRX2030E19,CMA CGM APOLLON,CMA,APOL,RX2030E19,RX2030E19,Inbound,07-09-2026 0400,07-09-2026 2000,07-09-2026 0200,,,,RES2EB,366,,Starboardside,3R65,0,2R37,-2,14.2,14.2,2888,JIB,SOK,1586,,4474,R3,1186,820,0
+DANIIRS03W26,DANIEL A,ARL,DANI,IRS03W26,IRS03W26,Inbound,08-09-2026 0000,08-09-2026 1200,07-09-2026 2200,,,,TRI-NB,155,24.5,Portside,4R12,4,4R23,-6,,,500,AQJ,NSA,657,,1157,R4,1475,1320,0

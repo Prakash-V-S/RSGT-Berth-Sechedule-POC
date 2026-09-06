@@ -7,7 +7,7 @@ import { resolve } from 'path';
  * CsvReaderService
  *
  * Single responsibility: locate and read the raw CSV file contents
- * from the configured location (CSV_FILE_PATH). It does not know
+ * from the configured location (INPUT_CSV_PATH). It does not know
  * anything about the CSV's columns or how to turn rows into domain
  * objects — that is the DataParser's job.
  *
@@ -22,7 +22,7 @@ export class CsvReaderService {
   private getConfiguredFilePath(): string {
     const filePath = this.configService.get<string>('csv.filePath');
     if (!filePath) {
-      throw new Error('CSV_FILE_PATH is not configured');
+      throw new Error('INPUT_CSV_PATH is not configured');
     }
     return resolve(process.cwd(), filePath);
   }
