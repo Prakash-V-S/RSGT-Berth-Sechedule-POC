@@ -140,12 +140,12 @@ export class ExcelGeneratorService {
                 try { mainSheet.unMergeCells(cell.address); } catch (e) {}
             }
         }
-        // Clear old dummy blocks in columns A-G (1-7) — no borders, no fills
-        for (let c = 1; c <= 7; c++) {
+        // Clear old dummy blocks in columns A-I (1-9) but keep the grid borders
+        for (let c = 1; c <= 9; c++) {
             const cell = mainSheet.getCell(r, c);
             cell.value = null;
             cell.fill = { type: 'pattern', pattern: 'none' };
-            cell.border = {};
+            cell.border = { top: {style:'thin'}, bottom: {style:'thin'}, left: {style:'thin'}, right: {style:'thin'} };
             if (cell.isMerged) {
                 try { mainSheet.unMergeCells(cell.address); } catch (e) {}
             }
