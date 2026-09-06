@@ -20,7 +20,11 @@ export class ExcelGeneratorService {
     return d;
   }
 
-  async generateBerthPlan(processed: { record: any; isValid: boolean; error?: string; position?: CalculatedPosition }[], outputPath: string): Promise<{total: number, successful: number, invalid: number, errors: any[]}> {
+  async generateBerthPlan(
+    processed: { record: any; isValid: boolean; error?: string; position?: CalculatedPosition; drawn?: boolean }[],
+    outputPath: string,
+    parseErrors: { vesselName?: string; message: string }[] = [],
+  ): Promise<{total: number, successful: number, invalid: number, errors: any[]}> {
     if (!fs.existsSync(this.TEMPLATE_PATH)) {
       throw new Error(`Template not found at ${this.TEMPLATE_PATH}`);
     }
@@ -606,8 +610,8 @@ export class ExcelGeneratorService {
       const berthInfo = BERTH_COLS_STATIC[rec.berthZone || 'UNKNOWN'];
       if (!berthInfo) {
           this.logger.warn(`Unsupported berth zone skipped: ${rec.berthZone}`);
-          processed.find(pr => pr.record.vesselName === rec.vesselName)!.isValid = false;
-          processed.find(pr => pr.record.vesselName === rec.vesselName)!.error = 'Unsupported berth zone';
+          p.isValid = false;
+          p.error = 'Unsupported berth zone';
           continue;
       }
       const totalBerthCols = berthInfo.end - berthInfo.start + 1;
@@ -648,8 +652,8 @@ export class ExcelGeneratorService {
       }
 
       if (excelRowStart < 11 || excelColStart < 14) {
-         processed.find(pr => pr.record.vesselName === rec.vesselName)!.isValid = false;
-         processed.find(pr => pr.record.vesselName === rec.vesselName)!.error = 'Out of bounds coordinates';
+         p.isValid = false;
+         p.error = 'Out of bounds coordinates';
          continue;
       }
 
@@ -668,8 +672,8 @@ export class ExcelGeneratorService {
       }
 
       if (conflict) {
-         processed.find(pr => pr.record.vesselName === rec.vesselName)!.isValid = false;
-         processed.find(pr => pr.record.vesselName === rec.vesselName)!.error = 'Physical Scheduling Conflict';
+         p.isValid = false;
+         p.error = 'Physical Scheduling Conflict';
          continue;
       }
       
@@ -777,6 +781,7 @@ export class ExcelGeneratorService {
         console.log(`Conflict Result: No Conflict. Successfully drawn.`);
       }
 
+      p.drawn = true;
       drawn++;
     }
 
@@ -786,6 +791,9 @@ export class ExcelGeneratorService {
       console.log(`\nSaved shape test to: ${testPath}`);
       return { total: 1, successful: 1, invalid: 0, errors: [] as { vesselName: string, message: string }[] };
     }
+
+    // Validation / conflict / valid summary lives on BERTH DETAILS (not MAIN BERTH PLAN)
+    this.writeBerthDetailsSheet(workbook, processed, parseErrors);
 
     // Re-paint grid borders AFTER vessel drawing (exceljs shared styles can drop earlier borders)
     for (let r = timelineStartRow; r <= lastTimelineRow; r++) {
@@ -830,10 +838,183 @@ export class ExcelGeneratorService {
 
     await workbook.xlsx.writeFile(outputPath);
     return {
-      total: processed.length,
+      total: processed.length + parseErrors.length,
       successful: drawn,
-      invalid: processed.filter(p => !p.isValid).length,
-      errors: processed.filter(p => !p.isValid).map(p => ({ vesselName: p.record.vesselName, message: p.error || 'Unknown error' }))
+      invalid: processed.filter(p => !p.isValid).length + parseErrors.length,
+      errors: [
+        ...parseErrors.map(e => ({ vesselName: e.vesselName || 'Unknown', message: e.message })),
+        ...processed.filter(p => !p.isValid).map(p => ({ vesselName: p.record.vesselName, message: p.error || 'Unknown error' })),
+      ],
     };
+  }
+
+  /**
+   * Separate sheet listing every vessel with VALID / CONFLICT / INVALID status.
+   * Conflict & invalid records are reported here instead of only on MAIN BERTH PLAN console output.
+   */
+  private writeBerthDetailsSheet(
+    workbook: ExcelJS.Workbook,
+    processed: { record: any; isValid: boolean; error?: string; position?: CalculatedPosition; drawn?: boolean }[],
+    parseErrors: { vesselName?: string; message: string }[] = [],
+  ): void {
+    const sheetName = 'BERTH DETAILS';
+    const existing = workbook.getWorksheet(sheetName);
+    if (existing) workbook.removeWorksheet(existing.id);
+
+    const sheet = workbook.addWorksheet(sheetName, {
+      views: [{ state: 'normal', showGridLines: true, zoomScale: 90 }],
+    });
+
+    const headers = [
+      'S.No',
+      'Status',
+      'Vessel Name',
+      'Berth',
+      'Service',
+      'Line',
+      'Berthside',
+      'LOA (m)',
+      'Beam (m)',
+      'Aft Meter',
+      'Fore Meter',
+      'ETA',
+      'ETB',
+      'ETD',
+      'Moves',
+      'Discharge',
+      'Load',
+      'Draft F/A',
+      'Remarks / Error',
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headers.forEach((h, i) => {
+      const cell = headerRow.getCell(i + 1);
+      cell.value = h;
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E79' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      cell.border = {
+        top: { style: 'thin' }, bottom: { style: 'thin' },
+        left: { style: 'thin' }, right: { style: 'thin' },
+      };
+    });
+    headerRow.height = 28;
+
+    const fmt = (d: Date | null | undefined) => {
+      if (!d || !(d instanceof Date) || isNaN(d.getTime())) return '';
+      const dd = d.getUTCDate().toString().padStart(2, '0');
+      const mm = (d.getUTCMonth() + 1).toString().padStart(2, '0');
+      const yyyy = d.getUTCFullYear();
+      const hh = d.getUTCHours().toString().padStart(2, '0');
+      const mi = d.getUTCMinutes().toString().padStart(2, '0');
+      return `${dd}-${mm}-${yyyy} ${hh}:${mi}`;
+    };
+
+    const statusOf = (p: { isValid: boolean; error?: string; drawn?: boolean }) => {
+      if (p.drawn && p.isValid) return 'VALID';
+      const err = (p.error || '').toLowerCase();
+      if (err.includes('conflict')) return 'CONFLICT';
+      if (!p.isValid) return 'INVALID';
+      return 'VALID';
+    };
+
+    const statusFill: Record<string, string> = {
+      VALID: 'FFC6EFCE',
+      CONFLICT: 'FFFFC7CE',
+      INVALID: 'FFFFEB9C',
+    };
+    const statusFont: Record<string, string> = {
+      VALID: 'FF006100',
+      CONFLICT: 'FF9C0006',
+      INVALID: 'FF9C5700',
+    };
+
+    let rowNum = 2;
+    let sno = 1;
+
+    const writeRow = (vals: any[], status: string) => {
+      const row = sheet.getRow(rowNum);
+      vals.forEach((v, i) => {
+        const cell = row.getCell(i + 1);
+        cell.value = v ?? '';
+        cell.border = {
+          top: { style: 'thin' }, bottom: { style: 'thin' },
+          left: { style: 'thin' }, right: { style: 'thin' },
+        };
+        cell.alignment = { vertical: 'middle', horizontal: i <= 1 ? 'center' : 'left', wrapText: true };
+        if (i === 1) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: statusFill[status] || 'FFFFFFFF' } };
+          cell.font = { bold: true, color: { argb: statusFont[status] || 'FF000000' } };
+        }
+      });
+      rowNum++;
+      sno++;
+    };
+
+    for (const p of processed) {
+      const rec = p.record || {};
+      const status = statusOf(p);
+      const draftParts = [rec.draftForward, rec.draftAft].filter(v => v !== undefined && v !== null);
+      writeRow([
+        sno,
+        status,
+        rec.vesselName || '',
+        rec.berthZone || '',
+        rec.service || '',
+        rec.line || '',
+        rec.berthside || '',
+        rec.loa ?? '',
+        rec.beam ?? '',
+        rec.aftMeter ?? '',
+        rec.foreMeter ?? '',
+        fmt(rec.eta),
+        fmt(rec.estTimeOfBerth),
+        fmt(rec.etd),
+        rec.moves ?? '',
+        rec.discharge ?? '',
+        rec.load ?? '',
+        draftParts.length ? draftParts.join(' / ') : '',
+        p.error || (status === 'VALID' ? 'Plotted on MAIN BERTH PLAN' : ''),
+      ], status);
+    }
+
+    for (const err of parseErrors) {
+      writeRow([
+        sno,
+        'INVALID',
+        err.vesselName || 'Unknown',
+        '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
+        err.message || 'Parse error',
+      ], 'INVALID');
+    }
+
+    // Summary block
+    rowNum += 1;
+    const validCount = processed.filter(p => statusOf(p) === 'VALID').length;
+    const conflictCount = processed.filter(p => statusOf(p) === 'CONFLICT').length;
+    const invalidCount = processed.filter(p => statusOf(p) === 'INVALID').length + parseErrors.length;
+
+    const summaryStart = rowNum;
+    [
+      ['SUMMARY', ''],
+      ['Total records', processed.length + parseErrors.length],
+      ['VALID (on main plan)', validCount],
+      ['CONFLICT (not plotted)', conflictCount],
+      ['INVALID (not plotted)', invalidCount],
+    ].forEach(([label, value]) => {
+      const row = sheet.getRow(rowNum++);
+      row.getCell(1).value = label;
+      row.getCell(2).value = value;
+      row.getCell(1).font = { bold: true };
+    });
+    sheet.getRow(summaryStart).getCell(1).font = { bold: true, size: 12, color: { argb: 'FF1F4E79' } };
+
+    const widths = [8, 12, 22, 8, 12, 10, 12, 10, 10, 10, 10, 18, 18, 18, 8, 10, 8, 12, 36];
+    widths.forEach((w, i) => { sheet.getColumn(i + 1).width = w; });
+
+    this.logger.log(
+      `BERTH DETAILS sheet: ${validCount} valid, ${conflictCount} conflict, ${invalidCount} invalid`,
+    );
   }
 }

@@ -56,7 +56,7 @@ async function bootstrap() {
   });
 
   // 3. Generate Excel Plan (handles math & positions inside the service)
-  const result = await excelGenerator.generateBerthPlan(processed, outputPath);
+  const result = await excelGenerator.generateBerthPlan(processed, outputPath, parseErrors);
 
   console.log(`Successfully processed: ${result.successful}`);
   console.log(`Validation errors: ${result.invalid + parseErrors.length}`);
