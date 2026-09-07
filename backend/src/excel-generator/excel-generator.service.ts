@@ -169,19 +169,29 @@ export class ExcelGeneratorService {
       };
     };
     
-    const scheduleStartDate = minTime === Number.MAX_SAFE_INTEGER ? new Date() : new Date(minTime);
-    // Align schedule start to the beginning of the 2-hour block
-    scheduleStartDate.setUTCMinutes(0, 0, 0);
-    scheduleStartDate.setUTCHours(Math.floor(scheduleStartDate.getUTCHours() / 2) * 2);
+    // Once a calendar day is in range, emit ALL 2h slots for that day (0001-0200 … 2201-2400),
+    // even if vessels start mid-day or finish early.
+    const startOfUtcDay = (d: Date) => {
+      const x = new Date(d);
+      x.setUTCHours(0, 0, 0, 0);
+      return x;
+    };
+    const exclusiveEndOfUtcDay = (d: Date) => {
+      const dayStart = startOfUtcDay(d);
+      // Already exactly midnight → that instant is the exclusive end of the previous day
+      if (d.getTime() === dayStart.getTime()) return dayStart;
+      return new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+    };
 
-    // End exactly at last vessel time (snapped up to 2h). No extra buffer day.
-    const scheduleEndDate = maxTime === Number.MIN_SAFE_INTEGER
-      ? new Date(scheduleStartDate.getTime() + 24 * 60 * 60 * 1000)
-      : new Date(maxTime);
-    scheduleEndDate.setUTCMinutes(0, 0, 0);
-    scheduleEndDate.setUTCHours(Math.ceil(scheduleEndDate.getUTCHours() / 2) * 2);
+    const scheduleStartDate =
+      minTime === Number.MAX_SAFE_INTEGER ? startOfUtcDay(new Date()) : startOfUtcDay(new Date(minTime));
+
+    let scheduleEndDate =
+      maxTime === Number.MIN_SAFE_INTEGER
+        ? new Date(scheduleStartDate.getTime() + 24 * 60 * 60 * 1000)
+        : exclusiveEndOfUtcDay(new Date(maxTime));
     if (scheduleEndDate.getTime() <= scheduleStartDate.getTime()) {
-      scheduleEndDate.setTime(scheduleStartDate.getTime() + intervalMinutes * 60000);
+      scheduleEndDate = new Date(scheduleStartDate.getTime() + 24 * 60 * 60 * 1000);
     }
 
     const getFractionalRowForTime = (time: Date) => {
@@ -920,7 +930,7 @@ export class ExcelGeneratorService {
         zoomScale: 70,
       },
     ];
-    // Print setup for Excel/PDF: fit width, tiny margins (PDF COM re-applies these too)
+    // Print setup for Excel/PDF: fit entire plan on one page width+height
     const printArea = `A1:${mainSheet.getColumn(berthGridEndCol).letter}${lastTimelineRow}`;
     try {
       mainSheet.pageSetup = {
@@ -929,21 +939,23 @@ export class ExcelGeneratorService {
         orientation: 'landscape',
         fitToPage: true,
         fitToWidth: 1,
-        fitToHeight: 0,
+        fitToHeight: 1,
+        paperSize: 3 as any, // xlPaperSizeTabloid 11x17 — more room, less squeeze
         scale: 100,
         horizontalCentered: true,
         verticalCentered: false,
         margins: {
-          left: 5 / 72,
-          right: 5 / 72,
-          top: 5 / 72,
-          bottom: 5 / 72,
+          left: 8 / 72,
+          right: 8 / 72,
+          // Extra top/bottom so header shapes and last-day rows are not clipped
+          top: 12 / 72,
+          bottom: 10 / 72,
           header: 0,
           footer: 0,
         },
       };
     } catch (e) {}
-    this.logger.log(`Sheet trimmed after row ${lastTimelineRow}; print area ${printArea}; fit-to-width enabled`);
+    this.logger.log(`Sheet trimmed after row ${lastTimelineRow}; print area ${printArea}; fit-to-page (1×1) enabled`);
 
     await workbook.xlsx.writeFile(outputPath);
 
