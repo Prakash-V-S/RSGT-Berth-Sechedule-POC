@@ -21,6 +21,61 @@ export class ExcelGeneratorService {
     return d;
   }
 
+  /**
+   * Remove any &lt;row r="N"&gt; from MAIN BERTH PLAN sheet XML where N &gt; lastTimelineRow.
+   * Prevents Excel showing empty bordered squares under sticky columns after 2201-2400.
+   */
+  private async scrubRowsPastTimeline(xlsxPath: string, lastTimelineRow: number): Promise<void> {
+    const JSZip = require('jszip');
+    const buf = fs.readFileSync(xlsxPath);
+    const zip = await JSZip.loadAsync(buf);
+
+    // Find the MAIN BERTH PLAN worksheet part via workbook.xml
+    const wbXml = await zip.file('xl/workbook.xml')!.async('string');
+    const sheetMatch = wbXml.match(
+      /<sheet[^>]*name="MAIN BERTH PLAN"[^>]*r:id="([^"]+)"[^>]*\/>|<sheet[^>]*r:id="([^"]+)"[^>]*name="MAIN BERTH PLAN"[^>]*\/>/,
+    );
+    const rId = sheetMatch?.[1] || sheetMatch?.[2];
+    if (!rId) return;
+
+    const relsXml = await zip.file('xl/_rels/workbook.xml.rels')!.async('string');
+    const relRe = new RegExp(`<Relationship[^>]*Id="${rId}"[^>]*Target="([^"]+)"[^>]*/>`);
+    const relMatch = relsXml.match(relRe);
+    if (!relMatch) return;
+
+    let sheetPath = relMatch[1].replace(/^\//, '');
+    if (!sheetPath.startsWith('xl/')) sheetPath = 'xl/' + sheetPath.replace(/^\.\//, '');
+
+    const sheetFile = zip.file(sheetPath);
+    if (!sheetFile) return;
+
+    let xml = await sheetFile.async('string');
+    const before = xml.length;
+    // Drop entire row elements past the last timeline row
+    xml = xml.replace(/<row\b[^>]*\br="(\d+)"[\s\S]*?<\/row>/g, (full: string, rStr: string) => {
+      const r = parseInt(rStr, 10);
+      return r > lastTimelineRow ? '' : full;
+    });
+    // Also tighten dimension ref if present (e.g. A1:BP200 → A1:BP{last})
+    xml = xml.replace(
+      /<dimension\s+ref="([A-Z]+)(\d+):([A-Z]+)(\d+)"\s*\/>/i,
+      (_m: string, c1: string, r1: string, c2: string, r2: string) => {
+        const bottom = Math.min(parseInt(r2, 10), lastTimelineRow);
+        return `<dimension ref="${c1}${r1}:${c2}${bottom}"/>`;
+      },
+    );
+
+    if (xml.length !== before) {
+      zip.file(sheetPath, xml);
+      const out = await zip.generateAsync({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+      });
+      fs.writeFileSync(xlsxPath, out);
+      this.logger.log(`Scrubbed trailing sheet rows after ${lastTimelineRow} in ${path.basename(xlsxPath)}`);
+    }
+  }
+
   async generateBerthPlan(
     processed: { record: any; isValid: boolean; error?: string; position?: CalculatedPosition; drawn?: boolean }[],
     outputPath: string,
@@ -124,19 +179,43 @@ export class ExcelGeneratorService {
     const berthGridEndCol = 68;   // last R4 column
     const templateLastRow = Math.max(mainSheet.rowCount || timelineStartRow, timelineStartRow);
 
-    const makeThinBorder = () => ({
-      top: { style: 'thin' as const, color: { argb: 'FF000000' } },
-      bottom: { style: 'thin' as const, color: { argb: 'FF000000' } },
-      left: { style: 'thin' as const, color: { argb: 'FF000000' } },
-      right: { style: 'thin' as const, color: { argb: 'FF000000' } },
+    const makeThinBorder = (): Partial<ExcelJS.Borders> => ({
+      top: { style: 'thin', color: { argb: 'FF000000' } },
+      bottom: { style: 'thin', color: { argb: 'FF000000' } },
+      left: { style: 'thin', color: { argb: 'FF000000' } },
+      right: { style: 'thin', color: { argb: 'FF000000' } },
     });
 
-    const makeDayEndBorder = () => ({
-      top: { style: 'thin' as const, color: { argb: 'FF000000' } },
-      bottom: { style: 'medium' as const, color: { argb: 'FF000000' } },
-      left: { style: 'thin' as const, color: { argb: 'FF000000' } },
-      right: { style: 'thin' as const, color: { argb: 'FF000000' } },
+    const makeDayEndBorder = (): Partial<ExcelJS.Borders> => ({
+      top: { style: 'thin', color: { argb: 'FF000000' } },
+      bottom: { style: 'medium', color: { argb: 'FF000000' } },
+      left: { style: 'thin', color: { argb: 'FF000000' } },
+      right: { style: 'thin', color: { argb: 'FF000000' } },
     });
+
+    // Bold vertical separators between berth zones (left edge of R2 / R3 / R4)
+    const BERTH_ZONE_SEP_LEFT_COLS = new Set([25, 36, 49]); // R1|R2, R2|R3, R3|R4
+    const BERTH_GRID_FIRST_COL = 14; // R1 start
+    const BERTH_GRID_LAST_COL = 68;  // R4 end
+    const thickEdge = (): Partial<ExcelJS.Border> => ({
+      style: 'thick',
+      color: { argb: 'FF000000' },
+    });
+
+    /** Thin grid + thick left/right edges on R1–R4 zone boundaries. */
+    const makeZoneAwareBorder = (col: number, isDayEnd: boolean): Partial<ExcelJS.Borders> => {
+      const border = isDayEnd ? makeDayEndBorder() : makeThinBorder();
+      if (col === BERTH_GRID_FIRST_COL || BERTH_ZONE_SEP_LEFT_COLS.has(col)) {
+        border.left = thickEdge();
+      }
+      if (col === BERTH_GRID_LAST_COL) {
+        border.right = thickEdge();
+      }
+      return border;
+    };
+
+    const TIME_FONT: Partial<ExcelJS.Font> = { name: 'Calibri', size: 16, bold: false };
+    const DATE_FONT: Partial<ExcelJS.Font> = { name: 'Calibri', size: 16, bold: false };
 
     const noneFill = (): ExcelJS.Fill => ({ type: 'pattern', pattern: 'none' });
     const grayFill = (): ExcelJS.Fill => ({
@@ -231,7 +310,7 @@ export class ExcelGeneratorService {
         if (c >= 10 && c <= 13) continue;
         setCellStyle(mainSheet.getCell(r, c), {
           fill: noneFill(),
-          border: isDayEnd ? makeDayEndBorder() : makeThinBorder(),
+          border: makeZoneAwareBorder(c, isDayEnd),
         });
       }
     };
@@ -252,7 +331,7 @@ export class ExcelGeneratorService {
          fill: grayFill(),
          border: makeThinBorder(),
          alignment: { vertical: 'middle', horizontal: 'center', textRotation: 0, wrapText: false },
-         font: { name: 'Calibri', size: 9 },
+         font: TIME_FONT,
        });
 
        const dd = dateObj.getUTCDate().toString().padStart(2, '0');
@@ -287,13 +366,13 @@ export class ExcelGeneratorService {
            fill: grayFill(),
            border: makeThinBorder(),
            alignment: { vertical: 'middle', horizontal: 'center', textRotation: 90 },
-           font: { bold: true, name: 'Calibri', size: 10 },
+           font: DATE_FONT,
          });
          setCellStyle(mainSheet.getCell(r, 13), {
            fill: noneFill(),
            border: makeThinBorder(),
            alignment: { vertical: 'middle', horizontal: 'center', textRotation: 90 },
-           font: { bold: true, name: 'Calibri', size: 10 },
+           font: DATE_FONT,
          });
        }
        mainSheet.getCell(info.startRow, 12).value = dateStr;
@@ -710,6 +789,15 @@ export class ExcelGeneratorService {
           excelRowEnd = excelRowStart + 1; // Minimum 1-row height
       }
 
+      // Never draw past the last timeline row — image anchors past this create
+      // empty bordered squares under the sticky columns (A–G) below 2201-2400.
+      excelRowStart = Math.max(timelineStartRow, Math.min(excelRowStart, lastTimelineRow));
+      excelRowEnd = Math.max(excelRowStart + 0.25, Math.min(excelRowEnd, lastTimelineRow + 1));
+      // br uses (excelRowEnd - 1) as 0-based; keep br.row <= lastTimelineRow
+      if (excelRowEnd - 1 > lastTimelineRow) {
+        excelRowEnd = lastTimelineRow + 1;
+      }
+
       if (excelRowStart < 11 || excelColStart < 14) {
          p.isValid = false;
          p.error = 'Out of bounds coordinates';
@@ -860,12 +948,12 @@ export class ExcelGeneratorService {
       const timeVal = String(mainSheet.getCell(r, 11).value || '');
       const isDayEnd = timeVal.startsWith('2201');
 
-      // Sticky lanes + berth grid: white, borders only (no gray)
+      // Sticky lanes + berth grid: white, borders only (no gray); thick R1–R4 separators
       for (let c = 1; c <= berthGridEndCol; c++) {
         if (c >= 11 && c <= 13) continue;
         setCellStyle(mainSheet.getCell(r, c), {
           fill: noneFill(),
-          border: isDayEnd ? makeDayEndBorder() : makeThinBorder(),
+          border: makeZoneAwareBorder(c, isDayEnd),
         });
       }
 
@@ -875,7 +963,7 @@ export class ExcelGeneratorService {
           fill: grayFill(),
           border: makeThinBorder(),
           alignment: { vertical: 'middle', horizontal: 'center', textRotation: 0, wrapText: false },
-          font: { name: 'Calibri', size: 9 },
+          font: TIME_FONT,
         });
       }
     }
@@ -885,15 +973,56 @@ export class ExcelGeneratorService {
           fill: grayFill(),
           border: makeThinBorder(),
           alignment: { vertical: 'middle', horizontal: 'center', textRotation: 90 },
-          font: { bold: true, name: 'Calibri', size: 10 },
+          font: DATE_FONT,
         });
         setCellStyle(mainSheet.getCell(r, 13), {
           fill: noneFill(),
           border: makeThinBorder(),
           alignment: { vertical: 'middle', horizontal: 'center', textRotation: 90 },
-          font: { bold: true, name: 'Calibri', size: 10 },
+          font: DATE_FONT,
         });
       }
+    }
+
+    // Give date/time columns a bit more width so larger fonts stay readable
+    try {
+      mainSheet.getColumn(11).width = Math.max(Number(mainSheet.getColumn(11).width) || 0, 12);
+      mainSheet.getColumn(12).width = Math.max(Number(mainSheet.getColumn(12).width) || 0, 5);
+      mainSheet.getColumn(13).width = Math.max(Number(mainSheet.getColumn(13).width) || 0, 5);
+    } catch (e) {}
+
+    // Continue thick R1–R4 separators through the header (rows 1–10) without wiping fills
+    const sepCols = [BERTH_GRID_FIRST_COL, ...BERTH_ZONE_SEP_LEFT_COLS];
+    for (let r = 1; r < timelineStartRow; r++) {
+      for (const c of sepCols) {
+        const cell = mainSheet.getCell(r, c);
+        const prev = cell.border || {};
+        // Fresh border object — never mutate shared style refs (leaks onto column defaults)
+        setCellStyle(cell, {
+          fill: cell.fill && (cell.fill as any).pattern !== 'none' ? (cell.fill as ExcelJS.Fill) : noneFill(),
+          font: cell.font ? { ...cell.font } : { name: 'Calibri', size: 10 },
+          alignment: cell.alignment ? { ...cell.alignment } : { vertical: 'middle', horizontal: 'center' },
+          border: {
+            top: prev.top ? { ...prev.top } : { style: 'thin', color: { argb: 'FF000000' } },
+            bottom: prev.bottom ? { ...prev.bottom } : { style: 'thin', color: { argb: 'FF000000' } },
+            right: prev.right ? { ...prev.right } : { style: 'thin', color: { argb: 'FF000000' } },
+            left: thickEdge(),
+          },
+        });
+      }
+      const endCell = mainSheet.getCell(r, BERTH_GRID_LAST_COL);
+      const endPrev = endCell.border || {};
+      setCellStyle(endCell, {
+        fill: endCell.fill && (endCell.fill as any).pattern !== 'none' ? (endCell.fill as ExcelJS.Fill) : noneFill(),
+        font: endCell.font ? { ...endCell.font } : { name: 'Calibri', size: 10 },
+        alignment: endCell.alignment ? { ...endCell.alignment } : { vertical: 'middle', horizontal: 'center' },
+        border: {
+          top: endPrev.top ? { ...endPrev.top } : { style: 'thin', color: { argb: 'FF000000' } },
+          bottom: endPrev.bottom ? { ...endPrev.bottom } : { style: 'thin', color: { argb: 'FF000000' } },
+          left: endPrev.left ? { ...endPrev.left } : { style: 'thin', color: { argb: 'FF000000' } },
+          right: thickEdge(),
+        },
+      });
     }
 
     // Strip extra columns past berth grid (template had cols out to ~123 with leaked borders/gray)
@@ -909,18 +1038,102 @@ export class ExcelGeneratorService {
       }
     }
 
-    // --- STOP AFTER LAST DATE/TIME ROW: no empty grids below ---
-    // IMPORTANT: do NOT assign cell.border = {} on leftover rows — exceljs uses
-    // shared styles, so clearing borders there also wipes the painted schedule grid.
-    const maxRowProbe = Math.max(mainSheet.rowCount || lastTimelineRow, templateLastRow, lastTimelineRow + 50);
-    for (let r = lastTimelineRow + 1; r <= maxRowProbe; r++) {
-      const row = mainSheet.getRow(r);
-      row.hidden = true;
-      row.height = 0.1;
+    // --- STOP AFTER LAST DATE/TIME ROW: no empty grids / border tails below ---
+    // Excel paints column-default borders onto empty rows past the used range.
+    // Cols 8–10 were picking up thick left borders and showing a "tail" of empty squares.
+    for (let c = 1; c <= Math.max(berthGridEndCol + 10, 90); c++) {
+      const col = mainSheet.getColumn(c);
+      const width = col.width;
+      col.style = {
+        font: { name: 'Calibri', size: 10 },
+        border: {},
+        fill: noneFill(),
+        alignment: { vertical: 'middle', horizontal: 'center', textRotation: 0 },
+      };
+      if (width != null && width !== undefined) {
+        col.width = width;
+      }
     }
-    const rowsArrFinal = (mainSheet as any)._rows as any[] | undefined;
-    if (rowsArrFinal && rowsArrFinal.length > lastTimelineRow + 1) {
-      rowsArrFinal.length = lastTimelineRow + 1;
+
+    // Drop every worksheet row below the last timeline slot (cell clear + splice)
+    const rowCountNow = Math.max(mainSheet.rowCount || lastTimelineRow, templateLastRow);
+    if (rowCountNow > lastTimelineRow) {
+      for (let r = lastTimelineRow + 1; r <= rowCountNow; r++) {
+        for (let c = 1; c <= Math.max(berthGridEndCol + 10, 90); c++) {
+          const cell = mainSheet.getCell(r, c);
+          if (cell.isMerged) {
+            try {
+              mainSheet.unMergeCells(cell.address);
+            } catch (e) {}
+          }
+          cell.value = null;
+          setCellStyle(cell, { fill: noneFill(), border: {} });
+        }
+      }
+      try {
+        mainSheet.spliceRows(lastTimelineRow + 1, rowCountNow - lastTimelineRow);
+      } catch (e) {
+        // Fallback: hide + truncate internal row array
+        for (let r = lastTimelineRow + 1; r <= rowCountNow; r++) {
+          const row = mainSheet.getRow(r);
+          row.hidden = true;
+          row.height = 0.1;
+        }
+        const rowsArrFinal = (mainSheet as any)._rows as any[] | undefined;
+        if (rowsArrFinal && rowsArrFinal.length > lastTimelineRow + 1) {
+          rowsArrFinal.length = lastTimelineRow + 1;
+        }
+      }
+    }
+    {
+      const rowsArrFinal = (mainSheet as any)._rows as any[] | undefined;
+      if (rowsArrFinal && rowsArrFinal.length > lastTimelineRow + 1) {
+        rowsArrFinal.length = lastTimelineRow + 1;
+      }
+    }
+
+    // Close the last timeline row so Excel does not visually "leak" vertical edges
+    for (let c = 1; c <= berthGridEndCol; c++) {
+      if (c >= 10 && c <= 13) continue;
+      const border = makeZoneAwareBorder(c, true);
+      border.bottom = { style: 'medium', color: { argb: 'FF000000' } };
+      setCellStyle(mainSheet.getCell(lastTimelineRow, c), { fill: noneFill(), border });
+    }
+    // Restore date/time fonts on the last row after the close-border pass
+    {
+      const timeVal = String(mainSheet.getCell(lastTimelineRow, 11).value || '');
+      if (timeVal) {
+        setCellStyle(mainSheet.getCell(lastTimelineRow, 11), {
+          fill: grayFill(),
+          border: {
+            ...makeThinBorder(),
+            bottom: { style: 'medium', color: { argb: 'FF000000' } },
+          },
+          alignment: { vertical: 'middle', horizontal: 'center', textRotation: 0, wrapText: false },
+          font: TIME_FONT,
+        });
+      }
+      for (const info of daysMap.values()) {
+        if (info.endRow !== lastTimelineRow) continue;
+        setCellStyle(mainSheet.getCell(lastTimelineRow, 12), {
+          fill: grayFill(),
+          border: {
+            ...makeThinBorder(),
+            bottom: { style: 'medium', color: { argb: 'FF000000' } },
+          },
+          alignment: { vertical: 'middle', horizontal: 'center', textRotation: 90 },
+          font: DATE_FONT,
+        });
+        setCellStyle(mainSheet.getCell(lastTimelineRow, 13), {
+          fill: noneFill(),
+          border: {
+            ...makeThinBorder(),
+            bottom: { style: 'medium', color: { argb: 'FF000000' } },
+          },
+          alignment: { vertical: 'middle', horizontal: 'center', textRotation: 90 },
+          font: DATE_FONT,
+        });
+      }
     }
     mainSheet.views = [
       {
@@ -958,6 +1171,14 @@ export class ExcelGeneratorService {
     this.logger.log(`Sheet trimmed after row ${lastTimelineRow}; print area ${printArea}; fit-to-page (1×1) enabled`);
 
     await workbook.xlsx.writeFile(outputPath);
+
+    // ExcelJS may still emit one phantom row under sticky cols from image anchors —
+    // scrub any sheet rows past the last timeline slot from the xlsx XML.
+    try {
+      await this.scrubRowsPastTimeline(outputPath, lastTimelineRow);
+    } catch (e: any) {
+      this.logger.warn(`Could not scrub trailing rows from xlsx: ${e?.message || e}`);
+    }
 
     // ExcelJS drops AutoShapes on write — restore top-nav legend / draft marker shapes
     try {
