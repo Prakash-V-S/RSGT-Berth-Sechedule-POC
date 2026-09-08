@@ -7,16 +7,16 @@ import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 
 const MAIN_SHEET_NAME = 'MAIN BERTH PLAN';
-/** Side padding around cropped content (PDF points). */
-const PAD = 5;
+/** Keep a few points of pad after tight crop (PDF points). */
+const PAD = 4;
 
-type SideCrop = { left: number; right: number };
+type PageRect = { left: number; bottom: number; right: number; top: number };
 
 /**
- * Crop left/right letterboxing only. Never touch top/bottom —
- * vertical MediaBox crops were slicing vessel blocks and sticky lanes.
+ * Shrink MediaBox/CropBox to the plan so side/bottom letterboxing disappears.
+ * Never raises the top (keeps header). PDF y-axis is bottom-up.
  */
-function applySideCrop(pdfPath: string, sides: SideCrop): boolean {
+function applyTightPageBox(pdfPath: string, rect: PageRect): boolean {
   let pdf = fs.readFileSync(pdfPath, 'latin1');
   const mb = pdf.match(/\/MediaBox\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/);
   if (!mb) return false;
@@ -24,22 +24,19 @@ function applySideCrop(pdfPath: string, sides: SideCrop): boolean {
   const pageW = parseFloat(mb[3]);
   const pageH = parseFloat(mb[4]);
 
-  let left = Math.max(0, Math.min(sides.left, pageW - 40));
-  let right = Math.max(left + 40, Math.min(sides.right, pageW));
-  const bottom = 0;
+  let left = Math.max(0, Math.min(rect.left, pageW - 40));
+  let right = Math.max(left + 40, Math.min(rect.right, pageW));
+  let bottom = Math.max(0, Math.min(rect.bottom, pageH - 40));
+  // Always keep full page top so header / R-row is never sliced
   const top = pageH;
 
   const box = `[${left.toFixed(2)} ${bottom.toFixed(2)} ${right.toFixed(2)} ${top.toFixed(2)}]`;
-  const mediaBox = `/MediaBox ${box}`;
-  const cropBox = `/CropBox ${box}`;
-
-  pdf = pdf.replace(/\/MediaBox\s*\[[^\]]*\]/g, mediaBox);
+  pdf = pdf.replace(/\/MediaBox\s*\[[^\]]*\]/g, `/MediaBox ${box}`);
   if (/\/CropBox\s*\[/.test(pdf)) {
-    pdf = pdf.replace(/\/CropBox\s*\[[^\]]*\]/g, cropBox);
+    pdf = pdf.replace(/\/CropBox\s*\[[^\]]*\]/g, `/CropBox ${box}`);
   } else {
-    pdf = pdf.replace(/\/MediaBox\s*\[[^\]]*\]/g, (m) => `${m}\n${cropBox}`);
+    pdf = pdf.replace(/\/MediaBox\s*\[[^\]]*\]/g, (m) => `${m}\n/CropBox ${box}`);
   }
-
   fs.writeFileSync(pdfPath, pdf, 'latin1');
   return true;
 }
@@ -70,16 +67,21 @@ try {
   $printArea = [string]$sheet.PageSetup.PrintArea
   if ([string]::IsNullOrWhiteSpace($printArea)) { $printArea = $used.Address }
 
-  $marginPts = 8.0
-  $topMarginPts = 12.0
-  $bottomMarginPts = 10.0
+  # Tiny margins — berth X-axis is fixed; fill landscape width edge-to-edge
+  $marginPts = 4.0
+  $topMarginPts = 4.0
+  $bottomMarginPts = 4.0
 
-  $excel.PrintCommunication = $false
-  try {
-    $ps = $sheet.PageSetup
-    $ps.PrintArea = $printArea
+  function Set-RsgtWidthFit($worksheet, $area) {
+    $ps = $worksheet.PageSetup
+    $ps.PrintArea = $area
     $ps.Orientation = 2
-    try { $ps.PaperSize = 3 } catch { try { $ps.PaperSize = 1 } catch {} }
+    # Tabloid 11x17 landscape (wide print); fallback A3 / Letter
+    try { $ps.PaperSize = 3 } catch {
+      try { $ps.PaperSize = 8 } catch {
+        try { $ps.PaperSize = 1 } catch {}
+      }
+    }
     $ps.LeftMargin = $marginPts
     $ps.RightMargin = $marginPts
     $ps.TopMargin = $topMarginPts
@@ -88,12 +90,19 @@ try {
     $ps.FooterMargin = 0
     $ps.CenterHorizontally = $true
     $ps.CenterVertically = $false
+    # Fit WIDTH only — do NOT also fit height (that caused huge side white gaps)
     $ps.Zoom = $false
     $ps.FitToPagesWide = 1
-    $ps.FitToPagesTall = 1
+    $ps.FitToPagesTall = $false
+  }
+
+  $excel.PrintCommunication = $false
+  try {
+    Set-RsgtWidthFit $sheet $printArea
   } finally {
     $excel.PrintCommunication = $true
   }
+  Set-RsgtWidthFit $sheet $printArea
 
   $range = $sheet.Range($printArea)
   $contentW = [double]$range.Width
@@ -114,33 +123,38 @@ try {
   if ($contentW -le 0) { $contentW = $printableW }
   if ($contentH -le 0) { $contentH = $printableH }
 
-  $fitScale = [Math]::Min($printableW / $contentW, $printableH / $contentH)
-  $scaledW = $contentW * $fitScale
-  $contentLeft = (($pageWPts - $scaledW) / 2.0)
-  $contentRight = $contentLeft + $scaledW
-  if (($scaledW / $pageWPts) -gt 0.92) {
-    $scaledW = $pageWPts * 0.78
-    $contentLeft = ($pageWPts - $scaledW) / 2.0
-    $contentRight = $contentLeft + $scaledW
-  }
-
-  # Re-assert fit-to-1x1 after PrintCommunication is on (Excel often ignores the first set)
+  # Zoom from WIDTH only so Berth #1–#4 fills the landscape page
+  $zoomPct = [int][Math]::Max(10, [Math]::Min(100, [Math]::Floor(($printableW / $contentW) * 100)))
   $excel.PrintCommunication = $false
   try {
-    $sheet.PageSetup.Zoom = $false
-    $sheet.PageSetup.FitToPagesWide = 1
-    $sheet.PageSetup.FitToPagesTall = 1
+    $sheet.PageSetup.Zoom = $zoomPct
   } finally {
     $excel.PrintCommunication = $true
   }
-  $sheet.PageSetup.Zoom = $false
-  $sheet.PageSetup.FitToPagesWide = 1
-  $sheet.PageSetup.FitToPagesTall = 1
+  $sheet.PageSetup.Zoom = $zoomPct
 
-  # Export every printed page so nothing is dropped if Excel still paginates
+  # Guarantee no vertical page breaks (never split the static X-axis)
+  for ($i = 0; $i -lt 30; $i++) {
+    $vBreaks = 0
+    try { $vBreaks = [int]$sheet.VPageBreaks.Count } catch {}
+    if ($vBreaks -eq 0) { break }
+    if ($zoomPct -le 10) { break }
+    $zoomPct = [Math]::Max(10, $zoomPct - 3)
+    $sheet.PageSetup.Zoom = $zoomPct
+  }
+
+  $scaledW = $contentW * ($zoomPct / 100.0)
+  $scaledH = $contentH * ($zoomPct / 100.0)
+  $contentLeft = [Math]::Max(0.0, ($pageWPts - $scaledW) / 2.0)
+  $contentRight = [Math]::Min($pageWPts, $contentLeft + $scaledW)
+  # Top-aligned (CenterVertically = false)
+  $contentTop = $pageHPts - $topMarginPts
+  $contentBottom = [Math]::Max(0.0, $contentTop - $scaledH)
+
   $sheet.ExportAsFixedFormat(0, '${q(pdfPath)}', 0, $true, $false)
 
-  Write-Output ("RSGT_CROP|$contentLeft|$contentRight")
+  Write-Output ("RSGT_CROP|$contentLeft|$contentBottom|$contentRight|$contentTop")
+  Write-Output ("RSGT_PAGE|paper=$paper|zoom=$zoomPct|pageW=$pageWPts|pageH=$pageHPts|orient=landscape|vBreaks=$vBreaks")
 } catch {
   [Console]::Error.WriteLine($_.Exception.Message)
   exit 1
@@ -164,7 +178,7 @@ if (-not (Test-Path -LiteralPath '${q(pdfPath)}')) {
 }
 
 /**
- * Convert only the MAIN BERTH PLAN worksheet to PDF via Microsoft Excel COM (Windows).
+ * Convert MAIN BERTH PLAN to landscape PDF filling page width (Berth #1–#4).
  */
 export async function convertExcelToPdf(
   xlsxPath: string,
@@ -189,9 +203,9 @@ export async function convertExcelToPdf(
   );
   fs.writeFileSync(scriptPath, buildExportScript(absXlsx, absPdf, sheetName), 'utf8');
 
-  let sides: SideCrop | null = null;
+  let rect: PageRect | null = null;
   try {
-    const { stdout, stderr } = await execFileAsync(
+    const { stdout } = await execFileAsync(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
       {
@@ -207,13 +221,12 @@ export async function convertExcelToPdf(
       .find((l) => l.startsWith('RSGT_CROP|'));
     if (line) {
       const p = line.split('|');
-      sides = {
+      rect = {
         left: parseFloat(p[1]) || 0,
-        right: parseFloat(p[2]) || 0,
+        bottom: parseFloat(p[2]) || 0,
+        right: parseFloat(p[3]) || 0,
+        top: parseFloat(p[4]) || 0,
       };
-    }
-    if (stderr && String(stderr).trim()) {
-      // non-fatal diagnostics from Write-Output paths shouldn't appear here
     }
   } catch (err: any) {
     const detail = [err?.stderr, err?.stdout, err?.message]
@@ -236,19 +249,32 @@ export async function convertExcelToPdf(
     throw new Error(`PDF conversion finished but file is missing: ${absPdf}`);
   }
 
+  // Tight page box: remove leftover side/bottom white only when bounds look sane.
+  // With width-fit, left/right should already be near the margins — still trim pad.
   try {
     const raw = fs.readFileSync(absPdf, 'latin1');
     const mb = raw.match(/\/MediaBox\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/);
     const pageW = mb ? parseFloat(mb[3]) : 1224;
+    const pageH = mb ? parseFloat(mb[4]) : 792;
+    const pageCount = (raw.match(/\/Type\s*\/Page[^s]/g) || []).length;
 
-    const src = sides ?? {
-      left: pageW * 0.11,
-      right: pageW * 0.89,
-    };
-    applySideCrop(absPdf, {
-      left: src.left - PAD,
-      right: src.right + PAD,
-    });
+    if (rect && pageCount === 1) {
+      // Single page: pull sides + bottom in to the plan (keep top)
+      applyTightPageBox(absPdf, {
+        left: Math.max(0, rect.left - PAD),
+        bottom: Math.max(0, rect.bottom - PAD),
+        right: Math.min(pageW, rect.right + PAD),
+        top: pageH,
+      });
+    } else if (rect) {
+      // Multi-page: only trim sides so every page stays full-width of the plan
+      applyTightPageBox(absPdf, {
+        left: Math.max(0, rect.left - PAD),
+        bottom: 0,
+        right: Math.min(pageW, rect.right + PAD),
+        top: pageH,
+      });
+    }
   } catch {
     /* non-fatal */
   }

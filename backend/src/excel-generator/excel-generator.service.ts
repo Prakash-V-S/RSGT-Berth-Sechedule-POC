@@ -214,8 +214,8 @@ export class ExcelGeneratorService {
       return border;
     };
 
-    const TIME_FONT: Partial<ExcelJS.Font> = { name: 'Calibri', size: 16, bold: false };
-    const DATE_FONT: Partial<ExcelJS.Font> = { name: 'Calibri', size: 16, bold: false };
+    const TIME_FONT: Partial<ExcelJS.Font> = { name: 'Calibri', size: 24, bold: true };
+    const DATE_FONT: Partial<ExcelJS.Font> = { name: 'Calibri', size: 24, bold: true };
 
     const noneFill = (): ExcelJS.Fill => ({ type: 'pattern', pattern: 'none' });
     const grayFill = (): ExcelJS.Fill => ({
@@ -433,26 +433,25 @@ export class ExcelGeneratorService {
 
     const getVesselColor = (rec: any) => {
        const colors = [
-          '#4A86E8', // Blue
-          '#E06666', // Red
-          '#F6B26B', // Orange
-          '#93C47D', // Green
-          '#8E7CC3', // Purple
-          '#FFD966', // Yellow
-          '#76A5AF', // Teal
-          '#C9DAF8', // Light Blue
-          '#D5A6BD', // Pink
-          '#B4A7D6', // Lavender
-          '#E6B8AF', // Peach
-          '#A2C4C9', // Light Teal
+          // '#4A86E8', // Blue
+          // '#E06666', // Red
+          // '#F6B26B', // Orange
+          // '#93C47D', // Green
+          // '#8E7CC3', // Purple
+          // '#FFD966', // Yellow
+          // '#76A5AF', // Teal
+          '#C6E0B4', // Lime Accent 6 Lighter 60
+          '#FFE699', // Chocolate Accent 4 Lighter 60
+          '#BDD7EE', // Blue Accent 1 Lighter 60
+          '#D9D9D9', // White Background 1 Darker 15
        ];
-       const name = rec.vesselName || '';
-       let hash = 0;
-       for (let i = 0; i < name.length; i++) {
-           hash = name.charCodeAt(i) + ((hash << 5) - hash);
+       const fn = getVesselColor as any;
+       if (fn.idx === undefined) fn.idx = 0;
+       if (!rec._assignedColor) {
+           rec._assignedColor = colors[fn.idx % colors.length];
+           fn.idx++;
        }
-       hash = Math.abs(hash);
-       return colors[hash % colors.length];
+       return rec._assignedColor;
     };
 
     const formatCompactDate = (d: Date | null | undefined) => {
@@ -511,9 +510,20 @@ export class ExcelGeneratorService {
       const shipW = Math.max(40, targetW - padX * 2);
       const shipH = Math.max(28, shipBandH - padTop);
 
+      const startM = Math.round(Math.min(rec.foreMeter || 0, rec.aftMeter || 0));
+      const endM = Math.round(Math.max(rec.foreMeter || 0, rec.aftMeter || 0));
+      const startStr = startM > 0 ? `${startM}M` : '';
+      const endStr = endM > 0 ? `${endM}M` : '';
+
+      const meterFontSize = Math.max(12, Math.min(22, Math.round(targetW * 0.04)));
+      const meterBadgeH = Math.round(meterFontSize * 1.6);
+      const startW = startStr ? startStr.length * (meterFontSize * 0.65) + 16 : 0;
+      const endW = endStr ? endStr.length * (meterFontSize * 0.65) + 16 : 0;
+
+      const strokeW = 1.5;
       const bgSvg = `
         <svg width="${targetW}" height="${targetH}" xmlns="http://www.w3.org/2000/svg">
-          <rect x="0" y="0" width="${targetW}" height="${targetH}" rx="${radius}" ry="${radius}" fill="${colorHex}"/>
+          <rect x="${strokeW/2}" y="${strokeW/2}" width="${targetW - strokeW}" height="${targetH - strokeW}" rx="${radius}" ry="${radius}" fill="${colorHex}" stroke="#000000" stroke-width="${strokeW}"/>
         </svg>`;
 
       const layers: { input: Buffer; top: number; left: number }[] = [];
@@ -595,37 +605,41 @@ export class ExcelGeneratorService {
         : Math.max(12, Math.round(targetW * 0.05));
       const bodySize = Math.max(11, Math.round(titleSize * 0.85));
 
-      const lines: string[] = [];
+      const rfVal = rec.rf !== undefined && rec.rf !== null ? rec.rf : 'TBA';
+      const rfStr = `RF: ${rfVal}`;
+
+      const cBlack = textColor;
+      const cRed = '#CC0000';
+
+      const lines: { text: string, color: string }[] = [];
       if (labelMode === 'LARGE') {
-        lines.push(nameLine);
-        if (loaBeamStr) lines.push(loaBeamStr);
-        lines.push(`ETA ${eta} ETB ${etb} ETD ${etd}`);
-        lines.push(movesStr);
-        lines.push(disLoadStr);
-        lines.push(draftStr);
+        lines.push({ text: nameLine, color: cBlack });
+        if (loaBeamStr) lines.push({ text: loaBeamStr, color: cRed });
+        lines.push({ text: `ETA ${eta} ETB ${etb} ETD ${etd}`, color: cBlack });
+        lines.push({ text: movesStr, color: cBlack });
+        lines.push({ text: disLoadStr, color: cRed });
+        lines.push({ text: rfStr, color: cRed });
+        lines.push({ text: draftStr, color: cRed });
       } else if (labelMode === 'MEDIUM') {
-        lines.push(nameLine);
-        lines.push(`ETA ${eta} ETB ${etb} ETD ${etd}`);
-        lines.push(movesStr);
-        lines.push(disLoadStr);
+        lines.push({ text: nameLine, color: cBlack });
+        if (loaBeamStr) lines.push({ text: loaBeamStr, color: cRed });
+        lines.push({ text: `ETA ${eta} ETB ${etb} ETD ${etd}`, color: cBlack });
+        lines.push({ text: movesStr, color: cBlack });
+        lines.push({ text: disLoadStr, color: cRed });
       } else {
-        lines.push(nameStr);
-        lines.push(`ETA ${eta}  ETD ${etd}`);
+        lines.push({ text: nameStr, color: cBlack });
+        lines.push({ text: `ETA ${eta}  ETD ${etd}`, color: cBlack });
       }
 
       const lineGap = textAreaH / (lines.length + 0.5);
-      const textEls = lines.map((line, i) => {
+      const textEls = lines.map((item, i) => {
         const y = Math.round(lineGap * (i + 0.7));
-        const cls = i === 0 ? 'title' : 'text';
-        return `<text x="50%" y="${y}" class="${cls}">${line}</text>`;
+        const fontSize = i === 0 ? titleSize : bodySize;
+        return `<text x="50%" y="${y}" font-family="Arial, sans-serif" font-size="${fontSize}px" font-weight="bold" fill="${item.color}" text-anchor="middle" dominant-baseline="middle">${item.text}</text>`;
       });
 
       const textSvg = `
         <svg width="${targetW}" height="${textAreaH}" xmlns="http://www.w3.org/2000/svg">
-          <style>
-            .title { font-family: Arial, sans-serif; font-size: ${titleSize}px; font-weight: bold; fill: ${textColor}; text-anchor: middle; dominant-baseline: middle; }
-            .text { font-family: Arial, sans-serif; font-size: ${bodySize}px; font-weight: bold; fill: ${textColor}; text-anchor: middle; dominant-baseline: middle; }
-          </style>
           ${textEls.join('\n')}
         </svg>`;
       layers.push({ input: Buffer.from(textSvg), top: textTopY, left: 0 });
@@ -690,6 +704,7 @@ export class ExcelGeneratorService {
       const fontLg = Math.max(11, Math.min(20, Math.round(targetW * 0.38)));
       const cx = targetW / 2;
       const lineX = Math.round(targetW * 0.22);
+      const strokeW = 1.5;
 
       // Single SVG: start node → vertical rail → end node + service label
       const cardSvg = `
@@ -700,8 +715,8 @@ export class ExcelGeneratorService {
               <stop offset="100%" stop-color="${softenColor(colorHex, 0.12)}"/>
             </linearGradient>
           </defs>
-          <rect x="1" y="1" width="${targetW - 2}" height="${targetH - 2}"
-                rx="${radius}" ry="${radius}" fill="url(#g)" stroke="${borderHex}" stroke-width="2"/>
+          <rect x="${strokeW/2}" y="${strokeW/2}" width="${targetW - strokeW}" height="${targetH - strokeW}"
+                rx="${radius}" ry="${radius}" fill="url(#g)" stroke="${borderHex}" stroke-width="${strokeW}"/>
 
           <!-- START point (top) -->
           <circle cx="${lineX}" cy="${Math.round(headerH * 0.42)}" r="${Math.max(4, Math.round(targetW * 0.1))}"
@@ -1143,7 +1158,7 @@ export class ExcelGeneratorService {
         zoomScale: 70,
       },
     ];
-    // Print setup for Excel/PDF: fit entire plan on one page width+height
+    // Print setup: fixed Berth #1–#4 width → fill landscape page width (height may paginate)
     const printArea = `A1:${mainSheet.getColumn(berthGridEndCol).letter}${lastTimelineRow}`;
     try {
       mainSheet.pageSetup = {
@@ -1152,23 +1167,22 @@ export class ExcelGeneratorService {
         orientation: 'landscape',
         fitToPage: true,
         fitToWidth: 1,
-        fitToHeight: 1,
-        paperSize: 3 as any, // xlPaperSizeTabloid 11x17 — more room, less squeeze
+        fitToHeight: 0,
+        paperSize: 3 as any, // Tabloid 11x17 landscape
         scale: 100,
         horizontalCentered: true,
         verticalCentered: false,
         margins: {
-          left: 8 / 72,
-          right: 8 / 72,
-          // Extra top/bottom so header shapes and last-day rows are not clipped
-          top: 12 / 72,
-          bottom: 10 / 72,
+          left: 4 / 72,
+          right: 4 / 72,
+          top: 4 / 72,
+          bottom: 4 / 72,
           header: 0,
           footer: 0,
         },
       };
     } catch (e) {}
-    this.logger.log(`Sheet trimmed after row ${lastTimelineRow}; print area ${printArea}; fit-to-page (1×1) enabled`);
+    this.logger.log(`Sheet trimmed after row ${lastTimelineRow}; print area ${printArea}; landscape fit-to-width`);
 
     await workbook.xlsx.writeFile(outputPath);
 
