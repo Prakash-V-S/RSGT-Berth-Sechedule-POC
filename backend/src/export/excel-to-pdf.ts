@@ -72,16 +72,11 @@ try {
   $topMarginPts = 4.0
   $bottomMarginPts = 4.0
 
-  function Set-RsgtWidthFit($worksheet, $area) {
+  function Set-RsgtPageFit($worksheet, $area) {
     $ps = $worksheet.PageSetup
     $ps.PrintArea = $area
-    $ps.Orientation = 2
-    # Tabloid 11x17 landscape (wide print); fallback A3 / Letter
-    try { $ps.PaperSize = 3 } catch {
-      try { $ps.PaperSize = 8 } catch {
-        try { $ps.PaperSize = 1 } catch {}
-      }
-    }
+    $ps.Orientation = 1
+    $ps.PaperSize = 9
     $ps.LeftMargin = $marginPts
     $ps.RightMargin = $marginPts
     $ps.TopMargin = $topMarginPts
@@ -90,19 +85,18 @@ try {
     $ps.FooterMargin = 0
     $ps.CenterHorizontally = $true
     $ps.CenterVertically = $false
-    # Fit WIDTH only — do NOT also fit height (that caused huge side white gaps)
     $ps.Zoom = $false
     $ps.FitToPagesWide = 1
-    $ps.FitToPagesTall = $false
+    $ps.FitToPagesTall = 1
   }
 
   $excel.PrintCommunication = $false
   try {
-    Set-RsgtWidthFit $sheet $printArea
+    Set-RsgtPageFit $sheet $printArea
   } finally {
     $excel.PrintCommunication = $true
   }
-  Set-RsgtWidthFit $sheet $printArea
+  Set-RsgtPageFit $sheet $printArea
 
   $range = $sheet.Range($printArea)
   $contentW = [double]$range.Width
@@ -116,15 +110,18 @@ try {
     9 { $a = 8.27; $b = 11.69 }
     default { $a = 11.0; $b = 17.0 }
   }
-  $pageWPts = $excel.InchesToPoints([Math]::Max($a, $b))
-  $pageHPts = $excel.InchesToPoints([Math]::Min($a, $b))
+  $pageWPts = $excel.InchesToPoints([Math]::Min($a, $b))
+  $pageHPts = $excel.InchesToPoints([Math]::Max($a, $b))
   $printableW = [Math]::Max(1.0, $pageWPts - (2 * $marginPts))
   $printableH = [Math]::Max(1.0, $pageHPts - $topMarginPts - $bottomMarginPts)
   if ($contentW -le 0) { $contentW = $printableW }
   if ($contentH -le 0) { $contentH = $printableH }
 
-  # Zoom from WIDTH only so Berth #1–#4 fills the landscape page
-  $zoomPct = [int][Math]::Max(10, [Math]::Min(100, [Math]::Floor(($printableW / $contentW) * 100)))
+  # Zoom from both width and height to fit 7 days onto a single page
+  $zoomByW = [int][Math]::Max(10, [Math]::Min(100, [Math]::Floor(($printableW / $contentW) * 100)))
+  $zoomByH = [int][Math]::Max(10, [Math]::Min(100, [Math]::Floor(($printableH / $contentH) * 100)))
+  $zoomPct = [Math]::Min($zoomByW, $zoomByH)
+  
   $excel.PrintCommunication = $false
   try {
     $sheet.PageSetup.Zoom = $zoomPct
@@ -133,11 +130,21 @@ try {
   }
   $sheet.PageSetup.Zoom = $zoomPct
 
-  # Guarantee no vertical page breaks (never split the static X-axis)
+  # Guarantee no vertical page breaks
   for ($i = 0; $i -lt 30; $i++) {
     $vBreaks = 0
     try { $vBreaks = [int]$sheet.VPageBreaks.Count } catch {}
     if ($vBreaks -eq 0) { break }
+    if ($zoomPct -le 10) { break }
+    $zoomPct = [Math]::Max(10, $zoomPct - 3)
+    $sheet.PageSetup.Zoom = $zoomPct
+  }
+
+  # Guarantee no horizontal page breaks
+  for ($i = 0; $i -lt 40; $i++) {
+    $hBreaks = 0
+    try { $hBreaks = [int]$sheet.HPageBreaks.Count } catch {}
+    if ($hBreaks -eq 0) { break }
     if ($zoomPct -le 10) { break }
     $zoomPct = [Math]::Max(10, $zoomPct - 3)
     $sheet.PageSetup.Zoom = $zoomPct
@@ -154,7 +161,7 @@ try {
   $sheet.ExportAsFixedFormat(0, '${q(pdfPath)}', 0, $true, $false)
 
   Write-Output ("RSGT_CROP|$contentLeft|$contentBottom|$contentRight|$contentTop")
-  Write-Output ("RSGT_PAGE|paper=$paper|zoom=$zoomPct|pageW=$pageWPts|pageH=$pageHPts|orient=landscape|vBreaks=$vBreaks")
+  Write-Output ("RSGT_PAGE|paper=$paper|zoom=$zoomPct|pageW=$pageWPts|pageH=$pageHPts|orient=portrait|vBreaks=$vBreaks")
 } catch {
   [Console]::Error.WriteLine($_.Exception.Message)
   exit 1
@@ -178,7 +185,7 @@ if (-not (Test-Path -LiteralPath '${q(pdfPath)}')) {
 }
 
 /**
- * Convert MAIN BERTH PLAN to landscape PDF filling page width (Berth #1–#4).
+ * Convert MAIN BERTH PLAN to portrait PDF filling a single page.
  */
 export async function convertExcelToPdf(
   xlsxPath: string,

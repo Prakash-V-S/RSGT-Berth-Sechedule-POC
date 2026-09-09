@@ -214,8 +214,8 @@ export class ExcelGeneratorService {
       return border;
     };
 
-    const TIME_FONT: Partial<ExcelJS.Font> = { name: 'Calibri', size: 24, bold: true };
-    const DATE_FONT: Partial<ExcelJS.Font> = { name: 'Calibri', size: 24, bold: true };
+    const TIME_FONT: Partial<ExcelJS.Font> = { name: 'Calibri', size: 30, bold: true };
+    const DATE_FONT: Partial<ExcelJS.Font> = { name: 'Calibri', size: 30, bold: true };
 
     const noneFill = (): ExcelJS.Fill => ({ type: 'pattern', pattern: 'none' });
     const grayFill = (): ExcelJS.Fill => ({
@@ -1158,18 +1158,17 @@ export class ExcelGeneratorService {
         zoomScale: 70,
       },
     ];
-    // Print setup: fixed Berth #1–#4 width → fill landscape page width (height may paginate)
+    // Print setup: fixed Berth #1–#4 width → fill portrait page width (height may paginate)
     const printArea = `A1:${mainSheet.getColumn(berthGridEndCol).letter}${lastTimelineRow}`;
     try {
       mainSheet.pageSetup = {
         ...mainSheet.pageSetup,
         printArea,
-        orientation: 'landscape',
+        orientation: 'portrait',
         fitToPage: true,
         fitToWidth: 1,
-        fitToHeight: 0,
-        paperSize: 3 as any, // Tabloid 11x17 landscape
-        scale: 100,
+        fitToHeight: 1,
+        paperSize: 9 as any, // A4
         horizontalCentered: true,
         verticalCentered: false,
         margins: {
